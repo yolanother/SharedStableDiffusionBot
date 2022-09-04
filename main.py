@@ -47,6 +47,8 @@ async def replicate(ctx, *, token):
     encrypt = Fernet(user["key"])
     user["token"] = encrypt.encrypt(token.encode())
     save_user_data()
+    await ctx.respond(content="Your token has been set")
+
 
 
 async def logo(ctx, *, prompt):
@@ -73,9 +75,15 @@ async def dream(ctx, *, prompt, width=512, height=512):
 
         print (f"“{prompt}”\n{image}")
         await ctx.respond(content=f"“{prompt}”\n{image}")
+    except KeyError:
+        await ctx.respond(
+            content=f"“{prompt}”\n> Please set your token with `/replicate` in a private message to {bot.user.mention}")
     except Exception as e:
-        print(f"“{prompt}”\n> {e}")
-        await ctx.respond(content=f"“{prompt}”\n> {e}")
+        if "%s" % e == "key" or '%s' % e == "Invalid token.":
+            await ctx.respond(content=f"“{prompt}”\n> Please set your token with `/replicate` in a private message to {bot.user.mention}")
+        else:
+            print(f"“{prompt}”\n> {e}")
+            await ctx.respond(content=f"“{prompt}”\n> {e}")
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
