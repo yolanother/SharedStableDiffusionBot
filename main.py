@@ -31,7 +31,7 @@ def save_user_data():
 def load_user_data():
     if not os.path.exists(userdata):
         return dict()
-    with open("sdbot-userdata.pkl", "rb") as f:
+    with open(userdata, "rb") as f:
         try:
             return pickle.load(f)
         except:
