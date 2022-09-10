@@ -12,12 +12,24 @@ load_dotenv()
 
 bot = discord.Bot()
 
+
+def load_config():
+    if not os.path.exists("sdbot-config.json"):
+        exception = "sdbot-config.json not found. Please create it and add your bot token."
+        raise FileNotFoundError(exception)
+    with open("sdbot-config.json", "r") as f:
+        return json.load(f)
+
+config = load_config()
+userdata = config["userdata"]
+print("User data path set to " + userdata)
+
 def save_user_data():
-    with open("sdbot-userdata.pkl", "wb") as f:
+    with open(userdata, "wb") as f:
         pickle.dump(userdata, f)
 
 def load_user_data():
-    if not os.path.exists("sdbot-userdata.pkl"):
+    if not os.path.exists(userdata):
         return dict()
     with open("sdbot-userdata.pkl", "rb") as f:
         try:
