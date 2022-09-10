@@ -85,6 +85,8 @@ async def basic_prompt(ctx, model, prompt, width, height, init_image = None, ups
             await msg.edit(f"“{prompt}”\n> Upscaling...\n{image}")
             try:
                 upscaled = get_model("nightmareai/real-esrgan", ctx).predict(image=image)
+            except ReplicateError as e:
+                await ctx.respond(content=f"“{prompt}”\n> Upscaling failed: {e}")
             except ModelError as e:
                 await ctx.respond(content=f"“{prompt}”\n> Upscaling failed: {e}")
 
@@ -127,6 +129,8 @@ async def upscale(ctx, *, image):
     try:
         image = get_model("nightmareai/real-esrgan", ctx).predict(image=image)
         await ctx.respond(content=f"“Here is your upscaled image {ctx.author.mention}!\n{image}")
+    except ReplicateError as e:
+        await ctx.respond(content=f"{ctx.author.mention}, we failed to upscale your image.\nReason: {e}")
     except ModelError as e:
         await ctx.respond(content=f"{ctx.author.mention}, we failed to upscale your image.\nReason: {e}")
     except KeyError:
