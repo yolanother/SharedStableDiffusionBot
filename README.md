@@ -8,7 +8,7 @@ A simple bot for running stable diffusion via replicate. Users must enter their 
 * Create a file called sdbot-config.json. This file will be used to store configuration for your bot. It should look like the following:
 ```
 {
-    "userdata": "path\\to\\sdbot-config.json"
+    "userdata": "path\\to\\sdbot-userdata.pkl"
 }
 ```
 
