@@ -72,13 +72,13 @@ async def log_prompt(id, author, prompt, url, model, upscaled=False):
     if dbref is not None:
         id = "%s" % id
         # Iterate over words in prompt
-        trie = dbref.child("prompts").child("trie")
+        #trie = dbref.child("prompts").child("trie")
         for word in prompt.lower().split():
             sanitized_word = sanatize_key(word.replace(",", " ")).replace("_", "")
             try:
                 append(dbref.child("prompts").child("words"), sanitized_word, id)
-                trie = trie.child(sanitized_word)
-                add_record(trie.child("_values").child(id), author, prompt, url, model, upscaled)
+                #trie = trie.child(sanitized_word)
+                #add_record(trie.child("_values").child(id), author, prompt, url, model, upscaled)
             except Exception as e:
                 print(f"Couldn't add {sanitized_word}, {e}")
                 pass
@@ -138,9 +138,15 @@ async def replicate(ctx, *, token):
     await ctx.respond(content="Your token has been set")
 
 @bot.slash_command(description="Sync past midjourney prompts with the database")
-async def sync(ctx):
+async def sync(ctx, limit=100):
+    print (config["sync"])
+    if ctx.author.id not in config["sync"]:
+        print(f"Sync permission denied: {ctx.author.name} [{ctx.author.id}]")
+        await ctx.respond(f"You do not have permission to run a sync.")
+        return
+
     await ctx.respond(f"Syncing...")
-    messages = await ctx.channel.history(limit=10000).flatten()
+    messages = await ctx.channel.history(limit=int(limit)).flatten()
     msg = await ctx.send(content=f"Starting...")
     i = 0
     count = len(messages)
