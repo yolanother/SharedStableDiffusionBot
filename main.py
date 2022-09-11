@@ -1,11 +1,15 @@
 import json
 import os
 import pickle
+import re
+
 from firebase_admin import db
 
 import firebase_admin
 import replicate as rep
 import discord
+
+from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
@@ -31,40 +35,66 @@ try:
     default_app = firebase_admin.initialize_app(cred_obj, {
         'databaseURL': config["firebase-url"]
     })
-    dbref = db.reference("/urls")
+    dbref = db.reference("/")
 except ValueError as e:
     print(e)
     pass
 
 def append(node, child, value):
-    if node.get() is None:
-        node.set({child: [value]})
-    # Check if word is in database
-    elif child in node.get():
-        # If word is in database, add url to list
-        node.update({child: node.get()[child].append(value)})
-    else:
-        # If word is not in database, add word to database with url as first entry
-        node.update({child: [value]})
+    try:
+        child = child.lower()
+        c = node.child(child)
+        if c is None:
+            node.set({child: []})
+        values = c.get()
+        if values is None:
+            c.set([value])
+        elif value not in values:
+            # If word is in database, add url to list
+            values.append(value)
+            c.set(values)
+    except Exception as e:
+        print (f"Failed to append: {e}")
 
-def log_prompt(author, prompt, url, model):
+def add_record(node, author, prompt, url, model, upscaled=False):
+    node.set({
+        "username": author.display_name,
+        "mention": author.mention,
+        "id": author.id,
+        "avatar": author.avatar.url,
+        "prompt": prompt,
+        "url": url,
+        "model": model,
+        "upscaled": upscaled
+    })
+
+async def log_prompt(id, author, prompt, url, model, upscaled=False):
     if dbref is not None:
-
+        id = "%s" % id
         # Iterate over words in prompt
-        for word in prompt.split():
-            append(dbref.child("prompt_words_to_urls"), word, url)
-        append(dbref.child("prompts"), prompt, url)
+        trie = dbref.child("prompts").child("trie")
+        for word in prompt.lower().split():
+            sanitized_word = sanatize_key(word.replace(",", " ")).replace("_", "")
+            try:
+                append(dbref.child("prompts").child("words"), sanitized_word, id)
+                trie = trie.child(sanitized_word)
+                add_record(trie.child("_values").child(id), author, prompt, url, model, upscaled)
+            except Exception as e:
+                print(f"Couldn't add {sanitized_word}, {e}")
+                pass
+        record = dbref.child("prompts").child("data").child(prompt.lower()).child(id)
+        add_record(record, author, prompt, url, model)
+        append(dbref.child("prompts").child("list"), prompt.lower(), id)
 
-        p = dbref.child("records")
-        p.push().set({
-            "username": author.display_name,
-            "mention": author.mention,
-            "id": author.id,
-            "avatar": author.avatar.url,
-            "prompt": prompt,
-            "url": url,
-            "model": model
-        })
+        if upscaled:
+            p = dbref.child("records").child("upscaled").child(id)
+            add_record(p, author, prompt, url, model, upscaled)
+
+        p = dbref.child("records").child("all").child(id)
+        add_record(p, author, prompt, url, model, upscaled)
+
+        p = dbref.child("records").child("models").child(model).child("%s" % id)
+        add_record(p, author, prompt, url, model, upscaled)
 
 userdata = config["userdata"]
 print("User data path set to " + userdata)
@@ -107,6 +137,22 @@ async def replicate(ctx, *, token):
     save_user_data()
     await ctx.respond(content="Your token has been set")
 
+@bot.slash_command(description="Sync past midjourney prompts with the database")
+async def sync(ctx):
+    await ctx.respond(f"Syncing...")
+    messages = await ctx.channel.history(limit=10000).flatten()
+    msg = await ctx.send(content=f"Starting...")
+    i = 0
+    count = len(messages)
+    for message in reversed(messages):
+        i += 1
+        if message.author.display_name == "Midjourney Bot" and len(message.attachments) > 0:
+            try:
+                await msg.edit(f"Syncing: [{i}/{count} {int(i/count * 100)}%] {message.content}")
+                await log_midjourney(message)
+            except Exception as e:
+                print(e)
+    await msg.edit("Done!")
 
 
 async def logo(ctx, *, prompt):
@@ -149,10 +195,10 @@ async def basic_prompt(ctx, model, prompt, width, height, init_image = None, ups
 
         print(f"“{prompt}”\n{image}")
         if upscaled is not None:
-            log_prompt(ctx.author, prompt, upscaled, model)
+            await log_prompt(msg.id, ctx.author, prompt, upscaled, model)
             await msg.edit(content=f"“Here is your image {ctx.author.mention}!\n{prompt}”\nOriginal: {image}\nUpscaled: {upscaled}")
         else:
-            log_prompt(ctx.author, prompt, image, model)
+            await log_prompt(msg.id, ctx.author, prompt, image, model)
             await msg.edit(content=f"“Here is your image {ctx.author.mention}!\n{prompt}”\n{image}")
     except ReplicateError as e:
         await ctx.respond(content=f"“{prompt}”\n> Generation failed: {e}")
@@ -217,6 +263,72 @@ async def dream_animated(ctx, *, prompt, width=512, height=512):
 async def dream(ctx, *, prompt, width=512, height=512, init_image=None, upscale: bool=False):
     """Generate an image from a text prompt using the stable-diffusion model"""
     await basic_prompt(ctx, "stability-ai/stable-diffusion", prompt, width, height, init_image, upscale)
+
+# Region: Midjourney Logging
+
+def sanatize_key(key):
+    return key.replace(" ", "_")\
+        .replace(".png", "")\
+        .replace("-", "_")\
+        .replace("/", "_")\
+        .replace("$", "")\
+        .replace("[", "")\
+        .replace("]", "")\
+        .replace("#", "")\
+        .replace(".", "")\
+        .lower()
+
+
+async def log_midjourney(message):
+    if message.author.display_name == "Midjourney Bot" and len(message.attachments) > 0:
+        for attachment in message.attachments:
+            author = message.mentions[0]
+            url = attachment.url
+            prompt = message.content
+            upscaled = message.content.lower().find("upscaled") != -1
+            result = re.search('\*\*(.*)\*\*', prompt)
+            prompt = result.group(1)
+            model = "midjourney"
+            await log_prompt(message.id, author, prompt, url, "midjourney", upscaled)
+            if dbref is not None:
+                name = sanatize_key(os.path.basename(urlparse(url).path))
+                p = dbref.child("midjourney").child(name)
+                print ("Sanatized name: " + name)
+                p.set({
+                    "username": author.display_name,
+                    "mention": author.mention,
+                    "id": author.id,
+                    "avatar": author.avatar.url,
+                    "prompt": prompt,
+                    "url": url,
+                    "model": model,
+                    "upscaled": upscaled
+                })
+
+@bot.event
+async def on_message(message):
+    print("Received message from " + message.author.name)
+    message = await message.channel.fetch_message(message.id)  # Get Message object from ID
+    print("Message attachments: %d" % len(message.attachments))
+    await log_midjourney(message)
+
+@bot.event
+async def on_message_edit(before, after):
+    print("Received message edit from " + after.author.name)
+    print ("Message attachments: %d" % len(after.attachments))
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    print("Received reaction from " + user.name)
+    print ("Reaction: " + reaction)
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    print("Received reaction from " + payload.member.name)
+    # Get the message that was reacted to
+    channel = bot.get_channel(payload.channel_id)  # Get Channel object from ID
+    message = await channel.fetch_message(payload.message_id)  # Get Message object from ID
+    await log_midjourney(message)
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
