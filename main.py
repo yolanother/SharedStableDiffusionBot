@@ -1,6 +1,9 @@
 import json
 import os
 import pickle
+from firebase_admin import db
+
+import firebase_admin
 import replicate as rep
 import discord
 
@@ -21,6 +24,48 @@ def load_config():
         return json.load(f)
 
 config = load_config()
+default_app = None
+dbref = None
+try:
+    cred_obj = firebase_admin.credentials.Certificate(config["firebase"])
+    default_app = firebase_admin.initialize_app(cred_obj, {
+        'databaseURL': config["firebase-url"]
+    })
+    dbref = db.reference("/urls")
+except ValueError as e:
+    print(e)
+    pass
+
+def append(node, child, value):
+    if node.get() is None:
+        node.set({child: [value]})
+    # Check if word is in database
+    elif child in node.get():
+        # If word is in database, add url to list
+        node.update({child: node.get()[child].append(value)})
+    else:
+        # If word is not in database, add word to database with url as first entry
+        node.update({child: [value]})
+
+def log_prompt(author, prompt, url, model):
+    if dbref is not None:
+
+        # Iterate over words in prompt
+        for word in prompt.split():
+            append(dbref.child("prompt_words_to_urls"), word, url)
+        append(dbref.child("prompts"), prompt, url)
+
+        p = dbref.child("records")
+        p.push().set({
+            "username": author.display_name,
+            "mention": author.mention,
+            "id": author.id,
+            "avatar": author.avatar.url,
+            "prompt": prompt,
+            "url": url,
+            "model": model
+        })
+
 userdata = config["userdata"]
 print("User data path set to " + userdata)
 
@@ -103,9 +148,11 @@ async def basic_prompt(ctx, model, prompt, width, height, init_image = None, ups
                 await ctx.respond(content=f"“{prompt}”\n> Upscaling failed: {e}")
 
         print(f"“{prompt}”\n{image}")
-        if None != upscaled:
+        if upscaled is not None:
+            log_prompt(ctx.author, prompt, upscaled, model)
             await msg.edit(content=f"“Here is your image {ctx.author.mention}!\n{prompt}”\nOriginal: {image}\nUpscaled: {upscaled}")
         else:
+            log_prompt(ctx.author, prompt, image, model)
             await msg.edit(content=f"“Here is your image {ctx.author.mention}!\n{prompt}”\n{image}")
     except ReplicateError as e:
         await ctx.respond(content=f"“{prompt}”\n> Generation failed: {e}")
