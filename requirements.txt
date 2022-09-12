@@ -4,3 +4,4 @@ python-dotenv==0.21.0
 replicate==0.0.1a15
 cryptography
 firebase_admin
+pillow

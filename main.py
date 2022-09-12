@@ -15,6 +15,8 @@ from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from replicate.exceptions import ModelError, ReplicateError
 
+import getimageinfo
+
 load_dotenv()
 
 bot = discord.Bot()
@@ -56,17 +58,23 @@ def append(node, child, value):
     except Exception as e:
         print (f"Failed to append: {e}")
 
-def add_record(node, author, prompt, url, model, upscaled=False):
-    node.set({
+def add_record(node, id, author, prompt, url, model, upscaled=False):
+    size = getimageinfo.getsizes(url)
+    record = {
         "username": author.display_name,
         "mention": author.mention,
-        "id": author.id,
+        "author-id": author.id,
+        "id": id,
         "avatar": author.avatar.url,
         "prompt": prompt,
         "url": url,
         "model": model,
-        "upscaled": upscaled
-    })
+        "upscaled": upscaled,
+        "width": size[1][0],
+        "height": size[1][1]
+    }
+    print(f"Adding record: {record}")
+    node.set(record)
 
 async def log_prompt(id, author, prompt, url, model, upscaled=False):
     if dbref is not None:
@@ -78,23 +86,23 @@ async def log_prompt(id, author, prompt, url, model, upscaled=False):
             try:
                 append(dbref.child("prompts").child("words"), sanitized_word, id)
                 #trie = trie.child(sanitized_word)
-                #add_record(trie.child("_values").child(id), author, prompt, url, model, upscaled)
+                #add_record(trie.child("_values").child(id), id, author, prompt, url, model, upscaled)
             except Exception as e:
                 print(f"Couldn't add {sanitized_word}, {e}")
                 pass
         record = dbref.child("prompts").child("data").child(prompt.lower()).child(id)
-        add_record(record, author, prompt, url, model)
+        add_record(record, id, author, prompt, url, model)
         append(dbref.child("prompts").child("list"), prompt.lower(), id)
 
         if upscaled:
             p = dbref.child("records").child("upscaled").child(id)
-            add_record(p, author, prompt, url, model, upscaled)
+            add_record(p, id, author, prompt, url, model, upscaled)
 
         p = dbref.child("records").child("all").child(id)
-        add_record(p, author, prompt, url, model, upscaled)
+        add_record(p, id, author, prompt, url, model, upscaled)
 
         p = dbref.child("records").child("models").child(model).child("%s" % id)
-        add_record(p, author, prompt, url, model, upscaled)
+        add_record(p, id, author, prompt, url, model, upscaled)
 
 userdata = config["userdata"]
 print("User data path set to " + userdata)
@@ -284,7 +292,6 @@ def sanatize_key(key):
         .replace(".", "")\
         .lower()
 
-
 async def log_midjourney(message):
     if message.author.display_name == "Midjourney Bot" and len(message.attachments) > 0:
         for attachment in message.attachments:
@@ -299,34 +306,13 @@ async def log_midjourney(message):
             if dbref is not None:
                 name = sanatize_key(os.path.basename(urlparse(url).path))
                 p = dbref.child("midjourney").child(name)
-                print ("Sanatized name: " + name)
-                p.set({
-                    "username": author.display_name,
-                    "mention": author.mention,
-                    "id": author.id,
-                    "avatar": author.avatar.url,
-                    "prompt": prompt,
-                    "url": url,
-                    "model": model,
-                    "upscaled": upscaled
-                })
+                add_record(p, message.id, author, prompt, url, model, upscaled)
 
 @bot.event
 async def on_message(message):
-    print("Received message from " + message.author.name)
-    message = await message.channel.fetch_message(message.id)  # Get Message object from ID
-    print("Message attachments: %d" % len(message.attachments))
-    await log_midjourney(message)
-
-@bot.event
-async def on_message_edit(before, after):
-    print("Received message edit from " + after.author.name)
-    print ("Message attachments: %d" % len(after.attachments))
-
-@bot.event
-async def on_reaction_add(reaction, user):
-    print("Received reaction from " + user.name)
-    print ("Reaction: " + reaction)
+    if message.author.display_name == "Midjourney Bot" and len(message.attachments) > 0:
+        message = await message.channel.fetch_message(message.id)  # Get Message object from ID
+        await log_midjourney(message)
 
 @bot.event
 async def on_raw_reaction_add(payload):
