@@ -310,8 +310,8 @@ async def log_midjourney(message):
 
 @bot.event
 async def on_message(message):
+    message = await message.channel.fetch_message(message.id)  # Get Message object from ID
     if message.author.display_name == "Midjourney Bot" and len(message.attachments) > 0:
-        message = await message.channel.fetch_message(message.id)  # Get Message object from ID
         await log_midjourney(message)
 
 @bot.event
