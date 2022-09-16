@@ -297,6 +297,7 @@ async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_n
         }
     }
     dbref.child("jobs").child("queue").push(data)
+    await ctx.respond(f"“{prompt}”\n> Queued...")
 
 @bot.slash_command(description="Generate an image from a text prompt using the stable-diffusion model")
 async def dream(ctx, *, prompt, width=512, height=512, init_image=None, upscale: bool=False):
