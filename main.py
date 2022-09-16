@@ -272,6 +272,28 @@ async def dream_animated(ctx, *, prompt, width=512, height=512):
         await ctx.respond(
             content=f"“{prompt}”\n> {ctx.author.mention}, please set your token with `/replicate` in a private message to {bot.user.mention}")
 
+@bot.slash_command(description="Queue an image to be generated on the shared device pool")
+async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_name="k_lms",\
+                toggles=[1, 2, 3], realesrgan_model_name="RealESRGAN", ddim_eta=0.0, n_iter=1, \
+                batch_size=1, cfg_scale=7.5, seed='', fp=None, variant_amount=0.0, variant_seed=''):
+    data={
+        'prompt': prompt,
+        "height": 512,
+        "width": 512,
+        "ddim_steps": 50,
+        "sampler_name": "k_lms",
+        "toggles": [1, 2, 3],
+        "realesrgan_model_name": "RealESRGAN",
+        "ddim_eta": 0.0,
+        "n_iter": 1,
+        "batch_size": 1,
+        "cfg_scale": 7.5,
+        "seed": '',
+        "fp": None,
+        "variant_amount": 0.0,
+        "variant_seed": ''
+    }
+    dbref.child("jobs").child("queue").push(data)
 
 @bot.slash_command(description="Generate an image from a text prompt using the stable-diffusion model")
 async def dream(ctx, *, prompt, width=512, height=512, init_image=None, upscale: bool=False):
