@@ -278,6 +278,7 @@ async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_n
                 batch_size=1, cfg_scale=7.5, seed='', fp=None, variant_amount=0.0, variant_seed='', node=None):
     data={
         "worker": node,
+        "type": "txt2img",
         "parameters": {
             "prompt": prompt,
             "height": height,
