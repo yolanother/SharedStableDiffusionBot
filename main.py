@@ -277,21 +277,23 @@ async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_n
                 toggles=[1, 2, 3], realesrgan_model_name="RealESRGAN", ddim_eta=0.0, n_iter=1, \
                 batch_size=1, cfg_scale=7.5, seed='', fp=None, variant_amount=0.0, variant_seed=''):
     data={
-        'prompt': prompt,
-        "height": 512,
-        "width": 512,
-        "ddim_steps": 50,
-        "sampler_name": "k_lms",
-        "toggles": [1, 2, 3],
-        "realesrgan_model_name": "RealESRGAN",
-        "ddim_eta": 0.0,
-        "n_iter": 1,
-        "batch_size": 1,
-        "cfg_scale": 7.5,
-        "seed": '',
-        "fp": None,
-        "variant_amount": 0.0,
-        "variant_seed": ''
+        "parameters": {
+            "prompt": prompt,
+            "height": height,
+            "width": width,
+            "ddim_steps": ddim_steps,
+            "sampler_name": sampler_name,
+            "toggles": toggles,
+            "realesrgan_model_name": realesrgan_model_name,
+            "ddim_eta": ddim_eta,
+            "n_iter": n_iter,
+            "batch_size": batch_size,
+            "cfg_scale": cfg_scale,
+            "seed": seed,
+            "fp": fp,
+            "variant_amount": variant_amount,
+            "variant_seed": variant_seed
+        }
     }
     dbref.child("jobs").child("queue").push(data)
 
