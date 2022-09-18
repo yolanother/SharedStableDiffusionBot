@@ -1,21 +1,20 @@
 import json
 import os
 import pickle
-import re
 
 from firebase_admin import db
+from firebase_job import FirebaseJob
+from art_gallery_logger import log_prompt
+from art_gallery_logger import log_message
 
 import firebase_admin
 import replicate as rep
 import discord
 
-from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from replicate.exceptions import ModelError, ReplicateError
-
-import getimageinfo
 
 load_dotenv()
 
@@ -42,67 +41,8 @@ except ValueError as e:
     print(e)
     pass
 
-def append(node, child, value):
-    try:
-        child = child.lower()
-        c = node.child(child)
-        if c is None:
-            node.set({child: []})
-        values = c.get()
-        if values is None:
-            c.set([value])
-        elif value not in values:
-            # If word is in database, add url to list
-            values.append(value)
-            c.set(values)
-    except Exception as e:
-        print (f"Failed to append: {e}")
 
-def add_record(node, id, author, prompt, url, model, upscaled=False):
-    size = getimageinfo.getsizes(url)
-    record = {
-        "username": author.display_name,
-        "mention": author.mention,
-        "author-id": author.id,
-        "id": id,
-        "avatar": author.avatar.url,
-        "prompt": prompt,
-        "url": url,
-        "model": model,
-        "upscaled": upscaled,
-        "width": size[1][0],
-        "height": size[1][1]
-    }
-    print(f"Adding record: {record}")
-    node.set(record)
 
-async def log_prompt(id, author, prompt, url, model, upscaled=False):
-    if dbref is not None:
-        id = "%s" % id
-        # Iterate over words in prompt
-        #trie = dbref.child("prompts").child("trie")
-        for word in prompt.lower().split():
-            sanitized_word = sanatize_key(word.replace(",", " ")).replace("_", "")
-            try:
-                append(dbref.child("prompts").child("words"), sanitized_word, id)
-                #trie = trie.child(sanitized_word)
-                #add_record(trie.child("_values").child(id), id, author, prompt, url, model, upscaled)
-            except Exception as e:
-                print(f"Couldn't add {sanitized_word}, {e}")
-                pass
-        record = dbref.child("prompts").child("data").child(prompt.lower()).child(id)
-        add_record(record, id, author, prompt, url, model)
-        append(dbref.child("prompts").child("list"), prompt.lower(), id)
-
-        if upscaled:
-            p = dbref.child("records").child("upscaled").child(id)
-            add_record(p, id, author, prompt, url, model, upscaled)
-
-        p = dbref.child("records").child("all").child(id)
-        add_record(p, id, author, prompt, url, model, upscaled)
-
-        p = dbref.child("records").child("models").child(model).child("%s" % id)
-        add_record(p, id, author, prompt, url, model, upscaled)
 
 userdata = config["userdata"]
 print("User data path set to " + userdata)
@@ -144,6 +84,34 @@ async def replicate(ctx, *, token):
     user["token"] = encrypt.encrypt(token.encode())
     save_user_data()
     await ctx.respond(content="Your token has been set")
+
+reserved = dict()
+
+@bot.slash_command(description="Reserve a system for dedicated queuing")
+async def reserve(ctx, *, node):
+    if ctx.author.id not in config["sync"]:
+        print(f"Reserve permission denied: {ctx.author.name} [{ctx.author.id}]")
+        await ctx.respond(f"I'm sorry {ctx.author.name}, you do not have permission to reserve a system")
+        return
+    if node not in reserved:
+        reserved[node] = {
+            'author': ctx.author,
+            'node': node
+        }
+        await ctx.respond(f"{node} is now reserved for {ctx.author.name}")
+
+@bot.slash_command(description="Releases a system from dedicated queuing")
+async def release(ctx, *, node):
+    if ctx.author.id not in config["sync"]:
+        print(f"Reserve permission denied: {ctx.author.name} [{ctx.author.id}]")
+        await ctx.respond(f"I'm sorry {ctx.author.name}, you do not have permission to reserve a system")
+        return
+    if node in reserved and ctx.author.id == reserved[node].author.id:
+        del reserved[node]
+        await ctx.respond(f"{node} is now freely available for use")
+
+
+
 
 @bot.slash_command(description="Sync past midjourney prompts with the database")
 async def sync(ctx, limit=100):
@@ -209,10 +177,10 @@ async def basic_prompt(ctx, model, prompt, width, height, init_image = None, ups
 
         print(f"“{prompt}”\n{image}")
         if upscaled is not None:
-            await log_prompt(msg.id, ctx.author, prompt, upscaled, model)
+            await log_prompt(dbref, msg.id, ctx.author, prompt, upscaled, model)
             await msg.edit(content=f"“Here is your image {ctx.author.mention}!\n{prompt}”\nOriginal: {image}\nUpscaled: {upscaled}")
         else:
-            await log_prompt(msg.id, ctx.author, prompt, image, model)
+            await log_prompt(dbref, msg.id, ctx.author, prompt, image, model)
             await msg.edit(content=f"“Here is your image {ctx.author.mention}!\n{prompt}”\n{image}")
     except ReplicateError as e:
         await ctx.respond(content=f"“{prompt}”\n> Generation failed: {e}")
@@ -256,26 +224,19 @@ async def upscale(ctx, *, image):
         await ctx.respond(
             content=f"{ctx.author.mention}, please set your token with `/replicate` in a private message to {bot.user.mention}")
 
-
-@bot.slash_command(description="Generate an animated image from a text prompt using the stable-diffusion model")
-async def dream_animated(ctx, *, prompt, width=512, height=512):
-    await ctx.respond(f"“{prompt}”\n> Generating...")
-
-    try:
-        result = get_model("andreasjansson/stable-diffusion-animation", ctx).predict(prompt=prompt, width=width, height=height)
-        for i in result:
-            print (i)
-
-        print(f"“{prompt}”\n{image}")
-        await ctx.respond(content=f"“Here is your image {ctx.author.mention}!\n{prompt}”\n{image}")
-    except KeyError:
-        await ctx.respond(
-            content=f"“{prompt}”\n> {ctx.author.mention}, please set your token with `/replicate` in a private message to {bot.user.mention}")
-
 @bot.slash_command(description="Queue an image to be generated on the shared device pool")
 async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_name="k_lms",\
-                toggles=[1, 2, 3], realesrgan_model_name="RealESRGAN", ddim_eta=0.0, n_iter=1, \
+                toggles=[1, 2, 3], realesrgan_model_name="RealESRGAN", ddim_eta=0.0, n_iter=4, \
                 batch_size=1, cfg_scale=7.5, seed='', fp=None, variant_amount=0.0, variant_seed='', node=None):
+
+    if node is not None and node in reserved:
+        await ctx.respond(content=f"“{prompt}”\n> {ctx.author.mention}, this node is currently reserved for {reserved[node].display_name}. We'll add you to the queue for the next available machine.")
+        node = None
+        return
+
+    if ctx.author.id not in config["sync"]:
+        n_iter = min(n_iter, 4)
+
     data={
         "worker": node,
         "type": "txt2img",
@@ -283,7 +244,7 @@ async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_n
             "prompt": prompt,
             "height": height,
             "width": width,
-            "ddim_steps": ddim_steps,
+            "ddim_steps": min(ddim_steps, 500),
             "sampler_name": sampler_name,
             "toggles": toggles,
             "realesrgan_model_name": realesrgan_model_name,
@@ -297,49 +258,28 @@ async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_n
             "variant_seed": variant_seed
         }
     }
-    dbref.child("jobs").child("queue").push(data)
-    await ctx.respond(f"“{prompt}”\n> Queued...")
+    job = FirebaseJob(ctx, dbref, data, prompt)
+    await job.run()
 
 @bot.slash_command(description="Generate an image from a text prompt using the stable-diffusion model")
 async def dream(ctx, *, prompt, width=512, height=512, init_image=None, upscale: bool=False):
     """Generate an image from a text prompt using the stable-diffusion model"""
     await basic_prompt(ctx, "stability-ai/stable-diffusion", prompt, width, height, init_image, upscale)
 
-# Region: Midjourney Logging
-
-def sanatize_key(key):
-    return key.replace(" ", "_")\
-        .replace(".png", "")\
-        .replace("-", "_")\
-        .replace("/", "_")\
-        .replace("$", "")\
-        .replace("[", "")\
-        .replace("]", "")\
-        .replace("#", "")\
-        .replace(".", "")\
-        .lower()
-
 async def log_midjourney(message):
     if message.author.display_name == "Midjourney Bot" and len(message.attachments) > 0:
-        for attachment in message.attachments:
-            author = message.mentions[0]
-            url = attachment.url
-            prompt = message.content
-            upscaled = message.content.lower().find("upscaled") != -1
-            result = re.search('\*\*(.*)\*\*', prompt)
-            prompt = result.group(1)
-            model = "midjourney"
-            await log_prompt(message.id, author, prompt, url, "midjourney", upscaled)
-            if dbref is not None:
-                name = sanatize_key(os.path.basename(urlparse(url).path))
-                p = dbref.child("midjourney").child(name)
-                add_record(p, message.id, author, prompt, url, model, upscaled)
+        upscaled = message.content.lower().find("upscaled") != -1
+        log_message(dbref, message, "midjourney", upscaled)
 
 @bot.event
 async def on_message(message):
-    message = await message.channel.fetch_message(message.id)  # Get Message object from ID
-    if message.author.display_name == "Midjourney Bot" and len(message.attachments) > 0:
-        await log_midjourney(message)
+    try:
+        message = await message.channel.fetch_message(message.id)  # Get Message object from ID
+        if message.author.display_name == "Midjourney Bot" and len(message.attachments) > 0:
+            await log_midjourney(message)
+    except discord.errors.NotFound:
+        print(f"Message {message.id} not found, will not log it.")
+
 
 @bot.event
 async def on_raw_reaction_add(payload):

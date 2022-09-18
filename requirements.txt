@@ -1,7 +1,9 @@
 py-cord
 packaging==21.3
 python-dotenv==0.21.0
-replicate==0.0.1a15
+replicate==0.4.0
 cryptography
 firebase_admin
 pillow
+nest-asyncio
+emoji
