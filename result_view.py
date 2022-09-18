@@ -46,6 +46,9 @@ class ResultView(discord.ui.View):
         if 'name' in self.job.data:
             embed = discord.Embed(title="View Job", url=f"https://aiart.doubtech.com/job/{urllib.parse.quote_plus(self.job.data['name'])}", description="View the full state of the job and its results", color=0x00ff40)
 
+        if self.job.notes is not None:
+            message += "\n\n>>> " + self.job.notes
+
         if file is None:
             if self.msg is None:
                 self.msg = await self.job.ctx.send(message, view=self, embed=embed)

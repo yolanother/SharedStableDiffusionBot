@@ -2,9 +2,11 @@ import json
 import os
 import pickle
 
+from enum import Enum
+
 from firebase_admin import db
 from firebase_job import FirebaseJob
-from art_gallery_logger import log_prompt
+from art_gallery_logger import log_prompt, append_user_info
 from art_gallery_logger import log_message
 
 import firebase_admin
@@ -224,18 +226,39 @@ async def upscale(ctx, *, image):
         await ctx.respond(
             content=f"{ctx.author.mention}, please set your token with `/replicate` in a private message to {bot.user.mention}")
 
+class Sampler(Enum):
+    """Enum for the sampler to use"""
+    PLMS = "PLMS"
+    DDIM = "DDIM"
+    k_dpm_2_a = "k_dpm_2_a"
+    k_dpm_2 = "k_dpm_2"
+    k_euler_a = "k_euler_a"
+    k_euler = "k_euler"
+    k_heun = "k_heun"
+    k_lms = "k_lms"
+
 @bot.slash_command(description="Queue an image to be generated on the shared device pool")
-async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_name="k_lms",\
-                toggles=[1, 2, 3], realesrgan_model_name="RealESRGAN", ddim_eta=0.0, n_iter=4, \
-                batch_size=1, cfg_scale=7.5, seed='', fp=None, variant_amount=0.0, variant_seed='', node=None):
+async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_name: Sampler=Sampler.k_lms, realesrgan_model_name="RealESRGAN", ddim_eta=0.0, n_iter=4, \
+                batch_size=1, cfg_scale=7.5, seed='', fp=None, variant_amount=0.0, variant_seed='', node=None,
+                upscale: bool=False, normalize_prompt_weights: bool=True,  fix_faces: bool=False):
 
     if node is not None and node in reserved:
         await ctx.respond(content=f"“{prompt}”\n> {ctx.author.mention}, this node is currently reserved for {reserved[node].display_name}. We'll add you to the queue for the next available machine.")
         node = None
         return
 
+    toggles = []
+    if upscale:
+        toggles.append(9)
+    if normalize_prompt_weights:
+        toggles.append(1)
+    if fix_faces:
+        toggles.append(8)
+
     if ctx.author.id not in config["sync"]:
         n_iter = min(n_iter, 4)
+
+    sampler_name = sampler_name.value
 
     data={
         "worker": node,
@@ -258,7 +281,19 @@ async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_n
             "variant_seed": variant_seed
         }
     }
-    job = FirebaseJob(ctx, dbref, data, prompt)
+
+    options = f"Options: {n_iter} iterations, {width}x{height}, {sampler_name}, {realesrgan_model_name}, {ddim_steps} steps, {ddim_eta} eta, {batch_size} batch size, {cfg_scale} scale, {seed} seed, {fp} fp, {variant_amount} variant amount, {variant_seed} variant seed"
+
+    if upscale:
+        options += ", upscaling"
+    if normalize_prompt_weights:
+        options += ", normalized prompt weights"
+    if fix_faces:
+        toggles.append(8)
+        options += ", fixed faces"
+
+    append_user_info(ctx.author, data['parameters'])
+    job = FirebaseJob(ctx, dbref, data, prompt, options)
     await job.run()
 
 @bot.slash_command(description="Generate an image from a text prompt using the stable-diffusion model")

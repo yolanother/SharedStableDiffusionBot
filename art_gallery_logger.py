@@ -20,6 +20,14 @@ def append(node, child, value):
     except Exception as e:
         print (f"Failed to append: {e}")
 
+def append_user_info(author, data):
+    data['user'] = {
+        'username': author.display_name,
+        'mention': author.mention,
+        'author-id': author.id,
+        'avatar': author.avatar.url
+    };
+
 def add_record(node, id, author, prompt, url, model, upscaled=False):
     size = getimageinfo.getsizes(url)
     record = {

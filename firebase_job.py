@@ -35,11 +35,12 @@ class FirebaseJob:
     loop = asyncio.get_event_loop()
     dataqueue = queue.Queue()
 
-    def __init__(self, ctx, dbref, data, name):
+    def __init__(self, ctx, dbref, data, name, notes=None):
         self.ctx = ctx
         self.data = data
         self.dbref = dbref
         self.name = name
+        self.notes = notes
 
     async def reroll(self):
         if 'name' in self.data:
@@ -99,7 +100,7 @@ class FirebaseJob:
         elif status.path.startswith("/name"):
             self.data['name'] = status.data
         elif status.path.startswith("/state"):
-            if status.data == "processing":
+            if status.data == "processing" and 'worker' in self.data:
                 await self.result_view.show_status(f"Your job is now being processed by {self.data['worker']}")
             elif status.data == "complete":
                 await self.complete()
