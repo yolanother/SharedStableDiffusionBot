@@ -7,3 +7,4 @@ firebase_admin
 pillow
 nest-asyncio
 emoji
+boto3

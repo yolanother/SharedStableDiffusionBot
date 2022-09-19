@@ -40,6 +40,14 @@ class ResultView(discord.ui.View):
                     data = io.BytesIO(await resp.read())
                     await self.send(f"“{self.job.name}”\n> {self.job.ctx.author.mention} your task has completed!", file=discord.File(data, name))
 
+    async def get_file_attachment(url):
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return None
+                else:
+                    data = io.BytesIO(await resp.read())
+                    return discord.File(data, name)
 
     async def send(self, message, file=None):
         embed = None

@@ -115,6 +115,18 @@ class FirebaseJob:
             if "state" in self.data:
                 state = self.data['state']
                 if state == "processing":
-                    await self.result_view.show_status("your task is now being processed!")
+                    if 'images' in self.data and len(self.data['images']) > 0:
+                        images = self.data['images']
+                        iterations = 'unknown'
+                        currentIteration = len(images) + 1
+                        if 'parameters' in self.data and 'n_iter' in self.data['parameters']:
+                            iterations = self.data['parameters']['n_iter']
+                            try:
+                                currentIteration = min(int(currentIteration), iterations)
+                            except:
+                                pass
+                        await self.result_view.show_status(f"your task is processing iteration {currentIteration}/{iterations}")
+                    else:
+                        await self.result_view.show_status("your task is now being processed!")
                 elif state == "complete":
                     await self.complete()

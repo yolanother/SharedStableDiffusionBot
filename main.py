@@ -6,7 +6,7 @@ from enum import Enum
 
 from firebase_admin import db
 from firebase_job import FirebaseJob
-from art_gallery_logger import log_prompt, append_user_info
+from art_gallery_logger import log_prompt, append_user_info, log_job
 from art_gallery_logger import log_message
 
 import firebase_admin
@@ -18,51 +18,8 @@ from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from replicate.exceptions import ModelError, ReplicateError
 
-load_dotenv()
 
-bot = discord.Bot()
-
-
-def load_config():
-    if not os.path.exists("sdbot-config.json"):
-        exception = "sdbot-config.json not found. Please create it and add your bot token."
-        raise FileNotFoundError(exception)
-    with open("sdbot-config.json", "r") as f:
-        return json.load(f)
-
-config = load_config()
-default_app = None
-dbref = None
-try:
-    cred_obj = firebase_admin.credentials.Certificate(config["firebase"])
-    default_app = firebase_admin.initialize_app(cred_obj, {
-        'databaseURL': config["firebase-url"]
-    })
-    dbref = db.reference("/")
-except ValueError as e:
-    print(e)
-    pass
-
-
-
-
-userdata = config["userdata"]
-print("User data path set to " + userdata)
-
-def save_user_data():
-    with open(userdata, "wb") as f:
-        pickle.dump(userdata, f)
-
-def load_user_data():
-    if not os.path.exists(userdata):
-        return dict()
-    with open(userdata, "rb") as f:
-        try:
-            return pickle.load(f)
-        except:
-            return dict()
-
-userdata = load_user_data()
+from sdbot_config_manager import dbref, userdata, config, bot, save_user_data
 
 def get_user_data(user):
     if user not in userdata:
@@ -112,8 +69,8 @@ async def release(ctx, *, node):
         del reserved[node]
         await ctx.respond(f"{node} is now freely available for use")
 
-
-
+def is_admin(ctx):
+    return ctx.author.id in config["sync"]
 
 @bot.slash_command(description="Sync past midjourney prompts with the database")
 async def sync(ctx, limit=100):
@@ -237,9 +194,26 @@ class Sampler(Enum):
     k_heun = "k_heun"
     k_lms = "k_lms"
 
+@bot.slash_command(description="Clean up any orphaned jobs")
+async def clean_jobs(ctx, *, model="stable-diffusion"):
+    if not is_admin(ctx):
+        await ctx.respond(content="You do not have permissions to clean jobs.")
+        return
+
+    await ctx.respond(content="Cleaning jobs...")
+    count = 0
+    jobs = dbref.child("jobs").child("queue").get()
+    for name in jobs.keys():
+        job = jobs[name]
+        print (f'Syncing {job["name"]}...')
+        await log_job(dbref, job, model)
+        count += 1
+        if count > 3:
+            break
+
 @bot.slash_command(description="Queue an image to be generated on the shared device pool")
-async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_name: Sampler=Sampler.k_lms, realesrgan_model_name="RealESRGAN", ddim_eta=0.0, n_iter=4, \
-                batch_size=1, cfg_scale=7.5, seed='', fp=None, variant_amount=0.0, variant_seed='', node=None,
+async def queue(ctx, *, prompt, height: int=512, width: int=512,  ddim_steps: int=50, sampler_name: Sampler=Sampler.k_lms, realesrgan_model_name="RealESRGAN", ddim_eta: float=0.0, n_iter: int=4, \
+                batch_size: int=1, cfg_scale: float=7.5, seed='', fp=None, variant_amount: float=0.0, variant_seed='', node=None,
                 upscale: bool=False, normalize_prompt_weights: bool=True,  fix_faces: bool=False):
 
     if node is not None and node in reserved:
@@ -265,9 +239,9 @@ async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_n
         "type": "txt2img",
         "parameters": {
             "prompt": prompt,
-            "height": height,
-            "width": width,
-            "ddim_steps": min(ddim_steps, 500),
+            "height": int(height),
+            "width": int(width),
+            "ddim_steps": min(int(ddim_steps), 500),
             "sampler_name": sampler_name,
             "toggles": toggles,
             "realesrgan_model_name": realesrgan_model_name,
@@ -291,6 +265,9 @@ async def queue(ctx, *, prompt, height=512, width=512,  ddim_steps=50, sampler_n
     if fix_faces:
         toggles.append(8)
         options += ", fixed faces"
+
+    toggles.append(2)
+    toggles.append(3)
 
     append_user_info(ctx.author, data['parameters'])
     job = FirebaseJob(ctx, dbref, data, prompt, options)
