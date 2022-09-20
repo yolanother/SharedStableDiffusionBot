@@ -6,6 +6,7 @@ import os
 import asyncio
 import nest_asyncio
 from result_view import ResultView
+from database_sync import sync_job
 
 def asyncio_run(future, as_task=True):
     """
@@ -93,6 +94,9 @@ class FirebaseJob:
     async def complete(self):
         await self.result_view.show_complete()
         self.processing = False
+        sync_job(self.data)
+        self.dbref.child("jobs").child("queue").child(self.data['name']).delete()
+        self.dbref.child("jobs").child("completed").child(self.data['name']).set(self.data)
 
     async def process_data(self, status):
         if status.path.startswith("/available-nodes"):

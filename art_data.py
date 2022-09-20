@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import re
 
 authors = dict()
 prompts = dict()
@@ -71,6 +72,25 @@ class Author:
         authors[id] = author
         return author
 
+    @staticmethod
+    def from_discord_author(author):
+        if id is None:
+            return None
+        if id in authors:
+            return authors[id]
+        author = Author(author.display_name, author.mention, f'd::{author.id}', Avatar(author.avatar.url))
+        authors[author.id] = author
+        return author
+
+    @staticmethod
+    def from_discord_message(message):
+        author = message.author
+        if message.author.display_name == "Midjourney Bot":
+            author = message.mentions[0]
+        return Author.from_discord_author(author)
+    @staticmethod
+    def from_discord_context(ctx):
+        return Author.from_discord_author(ctx.author)
 
 
 @dataclass
@@ -130,6 +150,7 @@ class Parameters:
         prompt = Prompt.from_string(splitparams[0])
         parameters = dict()
         parameters['prompt'] = param
+        parameters['upscaled'] = param.find("upscaled") != -1
         for p in splitparams:
             kvp = p.split(' ', 1)
             key = kvp[0].strip()
@@ -161,6 +182,7 @@ class Art:
     model: str
     width: int
     height: int
+    timestamp: float
     aspect_ratio = property(lambda self: self.width / float(self.height) if self.width is not None and self.height is not None else None)
 
     def to_ref(self):
@@ -175,7 +197,8 @@ class Art:
             'model': self.model,
             'width': self.width,
             'height': self.height,
-            'aspect_ratio': self.aspect_ratio
+            'aspect_ratio': self.aspect_ratio,
+            'timestamp': self.timestamp
         }
 
     @staticmethod
@@ -195,7 +218,43 @@ class Art:
                     Parameters.from_job(job),
                     model,
                     int(job['parameters']['width']),
-                    int(job['parameters']['height'])
+                    int(job['parameters']['height']),
+                    float(job['timestamp']) if 'timestamp' in job else None
                 ))
                 id += 1
         return arts
+
+    @staticmethod
+    def from_midjourney_message(message):
+        arts = []
+
+        for attachment in message.attachments:
+            arts.append(Art.from_midjourney_attachment(message, attachment))
+
+        if len(arts) > 0:
+            id = 0
+            for art in arts:
+                art.id = f"{art.id}::{id}"
+                id += 1
+
+        return arts
+
+
+    @staticmethod
+    def from_midjourney_attachment(message, attachment):
+        author = Author.from_discord_message(message)
+        prompt = message.content
+        result = re.search('\*\*(.*)\*\*', prompt)
+        if result is not None:
+            prompt = result.group(1)
+
+        return Art(
+            f'd::{message.id}',
+            attachment.url,
+            author,
+            Parameters.from_string(prompt),
+            'midjourney',
+            -1,
+            -1,
+            message.created_at.timestamp())
+

@@ -80,9 +80,6 @@ class ResultView(discord.ui.View):
                 response = await interaction.response.send_message(f"“{self.job.name}”\n> {self.job.ctx.author.mention} here is image {index + 1}", file=discord.File(data, name))
                 message = response.message
 
-                await log_message(self.job.dbref, message, "stable-diffusion", True,
-                                  prompt=self.job.data['parameters']['prompt'])
-
 
     @discord.ui.button(label="U1", style=discord.ButtonStyle.blurple, disabled=True)
     async def upscale_first(self, button: discord.ui.Button, interaction: discord.Interaction):

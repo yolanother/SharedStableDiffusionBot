@@ -5,18 +5,12 @@ import pickle
 from enum import Enum
 
 from firebase_admin import db, firestore
-from firebase_job import FirebaseJob
-from art_gallery_logger import log_prompt, append_user_info, log_job
-from art_gallery_logger import log_message
 
 import firebase_admin
-import replicate as rep
 import discord
 
 
-from cryptography.fernet import Fernet
 from dotenv import load_dotenv
-from replicate.exceptions import ModelError, ReplicateError
 
 load_dotenv()
 bot = discord.Bot()

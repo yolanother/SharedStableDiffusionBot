@@ -5,6 +5,8 @@ import pickle
 from enum import Enum
 
 from firebase_admin import db
+
+from database_sync import sync_midjourney_message
 from firebase_job import FirebaseJob
 from art_gallery_logger import log_prompt, append_user_info, log_job
 from art_gallery_logger import log_message
@@ -280,8 +282,8 @@ async def dream(ctx, *, prompt, width=512, height=512, init_image=None, upscale:
 
 async def log_midjourney(message):
     if message.author.display_name == "Midjourney Bot" and len(message.attachments) > 0:
-        upscaled = message.content.lower().find("upscaled") != -1
-        log_message(dbref, message, "midjourney", upscaled)
+        sync_midjourney_message(message)
+
 
 @bot.event
 async def on_message(message):

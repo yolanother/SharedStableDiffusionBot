@@ -46,8 +46,9 @@ def add_record(node, id, author, prompt, url, model, upscaled=False, parameters=
         "height": size[1][1],
         "parameters": parameters
     }
-    print(f"Adding record: {record}")
-    node.set(record)
+    raise Exception(f"DEPRECATED Record: {record}")
+    #print(f"Adding record: {record}")
+    #node.set(record)
 
 def sanatize_key(key):
     return key.replace(" ", "_")\

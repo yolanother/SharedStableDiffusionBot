@@ -1,9 +1,41 @@
+import re
+
 from google.cloud.firestore_v1 import ArrayUnion
 
 from sdbot_config_manager import dsref, dbref
 from art_data import Art, Avatar, Author, Prompt, Parameters
 
 doc = dsref.collection(u'art').document(u'artwork')
+
+def sync_midjourney_message(message):
+    author = Author.from_discord_message(message)
+    arts = Art.from_midjourney_message(message)
+    for art in arts:
+        dsref.collection(u'art').document(art.id).set(art.to_dict())
+        dsref.collection(u'prompts').document(art.parameters.prompt.prompt.replace('/', '')).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
+        dsref.collection(u'models').document(art.model).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
+    dsref.collection(u'authors').document(author.id).set(author.to_dict())
+
+def sync_job(job):
+    print (f'Syncing {job["name"]}...')
+    author = Author.from_job(job)
+    try:
+        arts = Art.from_job(job)
+        images = []
+        for art in arts:
+            images.append(art.to_ref())
+            dsref.collection(u'art').document(art.id).set(art.to_dict())
+            dsref.collection(u'models').document(art.model).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
+        prompt = Prompt.from_job(job)
+        if len(images) > 0:
+            dsref.collection(u'prompts').document(prompt.prompt).set({u'images': ArrayUnion(images)}, merge=True)
+
+        dbref.child("jobs").child("queue").child(job['name']).delete()
+        dbref.child("jobs").child("completed").child(job['name']).set(job)
+        dsref.collection(u'authors').document(author.id).set(author.to_dict())
+    except Exception as e:
+        print (e)
+
 
 def sync_realtime():
     ignored = True
@@ -40,14 +72,12 @@ def sync_jobs():
     jobs = dbref.child("jobs").child("queue").get()
     for name in jobs.keys():
         job = jobs[name]
-        print (f'Syncing {job["name"]}...')
-        arts = Art.from_job(job)
-        images = []
-        for art in arts:
-            images.append(art.to_ref())
-            dsref.collection(u'art').document(art.id).set(art.to_dict())
-        prompt = Prompt.from_job(job)
-        if len(images) > 0:
-            dsref.collection(u'prompts').document(prompt.prompt).set({u'images': ArrayUnion(images)}, merge=True)
+        sync_job(job)
 
-sync_realtime()
+def flush_queue():
+    jobs = dbref.child("jobs").child("queue").get()
+    for name in jobs.keys():
+        job = jobs[name]
+        dbref.child("jobs").child("queue").child(job['name']).delete()
+        dbref.child("jobs").child("completed").child(job['name']).set(job)
+
