@@ -53,7 +53,10 @@ class StableDiffusionFirebaseJob(FirebaseJob):
 
     async def run(self):
         print ("Queuing prompt request %s" % self.name)
-        await self.ctx.respond(f"“Job received...", ephemeral=True)
+        try:
+            await self.ctx.respond(f"“Job received...", ephemeral=True)
+        except:
+            pass
         await self.start_job_async()
 
     def on_data_updated(self):

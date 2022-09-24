@@ -10,6 +10,11 @@ from art_data import Art, Avatar, Author, Prompt, Parameters
 doc = dsref.collection(u'art').document(u'artwork')
 
 
+def cancel(job):
+    dbref.child("jobs").child("data").child(job).child("job").child("status").set("canceled")
+    dbref.child("jobs").child("queue").child(job).child("status").set("canceled")
+
+
 class FirebaseJob:
     def __init__(self, dbref, data, name=None, preferred_worker = None):
         self.data = data

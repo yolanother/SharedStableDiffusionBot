@@ -8,6 +8,9 @@ import io
 import urllib.parse
 from urllib.parse import urlparse
 
+import firebase_job
+
+
 class ResultView(discord.ui.View):
     msg = None
 
@@ -137,7 +140,8 @@ class ResultView(discord.ui.View):
 
     @discord.ui.button(label="X", row=1, style=discord.ButtonStyle.red)
     async def delete(self, button: discord.ui.Button, interaction: discord.Interaction):
-        pass
+        await interaction.response.send_message("Cancelling...")
+        firebase_job.cancel(self.name)
 
     @discord.ui.button(label="Reroll", row=1, emoji="🔄", style=discord.ButtonStyle.gray, disabled=True)
     async def reroll(self, button: discord.ui.Button, interaction: discord.Interaction):
