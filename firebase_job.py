@@ -1,136 +1,188 @@
-import asyncio
-import queue
 import time
-import os
+from abc import abstractmethod
 
-import asyncio
-import nest_asyncio
-from result_view import ResultView
-from database_sync import sync_job
+from google.cloud.firestore_v1 import ArrayUnion
 
-def asyncio_run(future, as_task=True):
-    """
-    A better implementation of `asyncio.run`.
+from firebase_job_util import FirebaseUpdateEvent, log
+from sdbot_config_manager import dsref, dbref
+from art_data import Art, Avatar, Author, Prompt, Parameters
 
-    :param future: A future or task or call of an async method.
-    :param as_task: Forces the future to be scheduled as task (needed for e.g. aiohttp).
-    """
+doc = dsref.collection(u'art').document(u'artwork')
 
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:  # no event loop running:
-        loop = asyncio.new_event_loop()
-        return loop.run_until_complete(_to_task(future, as_task, loop))
-    else:
-        nest_asyncio.apply(loop)
-        return asyncio.run(_to_task(future, as_task, loop))
-
-
-def _to_task(future, as_task, loop):
-    if not as_task or isinstance(future, asyncio.Task):
-        return future
-    return loop.create_task(future)
 
 class FirebaseJob:
-    message = None
-    loop = asyncio.get_event_loop()
-    dataqueue = queue.Queue()
-
-    def __init__(self, ctx, dbref, data, name, notes=None):
-        self.ctx = ctx
+    def __init__(self, dbref, data, name=None, preferred_worker = None):
         self.data = data
+        self.datalistener = None
+        self.queuelistener = None
+        self.status = 'idle'
         self.dbref = dbref
         self.name = name
-        self.notes = notes
+        self.preferred_worker = preferred_worker
 
-    async def reroll(self):
-        if 'name' in self.data:
-            del self.data['name']
-        if 'state' in self.data:
-            del self.data['state']
-        await self.execute()
+    def data_node(self):
+        return dbref.child("jobs").child("data").child(self.name)
 
-    async def execute(self):
-        self.processing = True
-        self.dbref.child("jobs").child("queue").push(self.data).listen(self.update_status)
-        self.result_view = ResultView(self)
-        await self.result_view.show_status("Queued...")
-        while self.processing:
-            if self.dataqueue.qsize() > 0:
-                data = self.dataqueue.get()
-                await self.process_data(data)
-            await asyncio.sleep(1)
+    def queue_node(self):
+        return dbref.child("jobs").child("queue").child(self.name)
 
-    async def run(self):
-        print ("Queuing prompt request %s" % self.name)
-        await self.ctx.respond(f"“Job received...", ephemeral=True)
-        await self.execute()
+    def start_job(self):
+        if self.name is None:
+            print(f"DATA: {self.data}")
+            syncdata = dbref.child("jobs").child("data").push({'data': self.data})
+            self.name = syncdata.key
+        else:
+            dbref.child("jobs").child("data").child(self.name).set({'data': self.data})
+        self.datalistener = self.data_node().listen(self.data_updated)
+        self.data_node().child('job').set({'status': 'requesting', 'request-time': time.time(), 'timestamp': time.time(), 'name': self.name})
+        self.queue_node().set({'status': 'requesting', 'request-time': time.time(), 'timestamp': time.time(), 'name': self.name})
+        self.queuelistener = self.queue_node().listen(self.queue_updated)
+        self.status = 'requesting'
 
-    def update_status(self, status):
-        data = status.data
-        self.dataqueue.put(status)
+    def cancel(self):
+        self.status = 'canceled'
+        self.queue_node().update({'status': 'canceled'})
+        self.on_canceled()
 
-    async def update_queue(self):
-        if 'worker' in self.data:
-            return
-        if 'available-nodes' not in self.data:
+    def data_updated(self, status):
+        ev = FirebaseUpdateEvent(status)
+
+        if ev.data is None:
             return
 
-        for name in self.data['available-nodes']:
-            print (f"{name} is available? {self.data['available-nodes'][name]}")
-            self.data['worker'] = name
-            self.dbref.child("jobs").child("queue").child(self.data['name']).child('worker').set(name)
+        if ev.path == '/':
+            self.data = ev.data
+        else:
+            d = self.data
 
-    async def process_available_nodes(self, status):
-        if 'name' not in self.data:
+            for segment in ev.segments[:-1]:
+                d = d[segment]
+            d[ev.segments[-1]] = status.data
+
+        self.on_data_updated()
+
+    def queue_updated(self, status):
+        ev = FirebaseUpdateEvent(status)
+        print(f"Queue Update: {ev}")
+
+        if ev.segments[0] == 'available-nodes' and self.status == 'requesting':
+            self.queue(ev.segments[-1])
+
+        if ev.data is None:
             return
 
-        name = os.path.basename(status.path)
-        if 'available-nodes' not in self.data:
-            self.data['available-nodes'] = dict()
-        self.data['available-nodes'][name] = status.data
-        await self.update_queue()
+        if ev.path == '/':
+            self.process_status_update('status' in ev.data and ev.data['status'])
+            if 'available-nodes' in ev.data:
+                nodes = ev.data['available-nodes']
+                for available_node in nodes.keys():
+                    if nodes[available_node]:
+                        self.queue(available_node)
+                        break
+        elif ev.path == '/status':
+            self.process_status_update(ev.data)
 
-    async def complete(self):
-        await self.result_view.show_complete()
-        self.processing = False
-        sync_job(self.data)
-        self.dbref.child("jobs").child("queue").child(self.data['name']).delete()
-        self.dbref.child("jobs").child("completed").child(self.data['name']).set(self.data)
+    def queue(self, node):
+        self.queue_node().child('status').set('queued')
+        if self.preferred_worker:
+            node = self.preferred_worker
+        self.queue_node().child('worker').set(node)
+        self.data_node().child('job').child('worker').set(node)
 
-    async def process_data(self, status):
-        if status.path.startswith("/available-nodes"):
-            await self.process_available_nodes(status)
-        elif status.path.startswith("/name"):
-            self.data['name'] = status.data
-        elif status.path.startswith("/state"):
-            if status.data == "processing" and 'worker' in self.data:
-                await self.result_view.show_status(f"Your job is now being processed by {self.data['worker']}")
-            elif status.data == "complete":
-                await self.complete()
-                self.processing = False
-            elif status.data == "error":
-                await self.result_view.show_status("Error")
-                self.processing = False
-        elif status.path == '/':
-            self.data = status.data
-            print (f"Data updated:  {status.path}\n{status.data}")
-            await self.update_queue()
-            if "state" in self.data:
-                state = self.data['state']
-                if state == "processing":
-                    if 'images' in self.data and len(self.data['images']) > 0:
-                        images = self.data['images']
-                        iterations = 'unknown'
-                        currentIteration = len(images) + 1
-                        if 'parameters' in self.data and 'n_iter' in self.data['parameters']:
-                            iterations = self.data['parameters']['n_iter']
-                            try:
-                                currentIteration = min(int(currentIteration), iterations)
-                            except:
-                                pass
-                        await self.result_view.show_status(f"your task is processing iteration {currentIteration}/{iterations}")
-                    else:
-                        await self.result_view.show_status("your task is now being processed!")
-                elif state == "complete":
-                    await self.complete()
+    def process_status_update(self, status):
+        if status != self.status:
+            if status == 'complete':
+                self.job_complete()
+            if status == 'failed':
+                self.job_failed()
+            if status == 'canceled':
+                self.job_canceled()
+            self.status = status
+
+            self.on_status_updated(status)
+
+    @abstractmethod
+    def on_status_updated(self, status):
+        pass
+
+    def job_cleanup(self):
+        self.queue_node().delete()
+        try:
+            if self.queuelistener is not None:
+                self.queuelistener.close()
+        except:
+            log("Error closing queue listener")
+        try:
+            if self.datalistener is not None:
+                self.datalistener.close()
+        except:
+            log("Error closing data listener")
+
+    def job_complete(self):
+        self.job_cleanup()
+        self.on_complete()
+
+    def job_canceled(self):
+        self.job_cleanup()
+        self.on_canceled()
+
+    def job_failed(self):
+        self.job_cleanup()
+        self.on_failed()
+
+    @abstractmethod
+    def on_complete(self):
+        pass
+
+    @abstractmethod
+    def on_canceled(self):
+        pass
+
+    @abstractmethod
+    def on_failed(self):
+        pass
+
+    @abstractmethod
+    def on_data_updated(self):
+        pass
+
+    @abstractmethod
+    def on_job_started(self):
+        pass
+
+class FirebaseJobTest(FirebaseJob):
+    def __init__(self, data):
+        super().__init__(data)
+
+    def on_job_started(self):
+        print('Job started!')
+
+    def on_data_updated(self):
+        print(f"Data Update: {self.data}")
+
+    def on_job_complete(self):
+        print('Job complete!')
+
+    def on_job_canceled(self):
+        print('Job canceled!')
+
+    def on_job_failed(self):
+        print('Job failed!')
+
+
+if __name__ == '__main__':
+    job = FirebaseJobTest({'test': 'test1'})
+    job.start_job()
+    job = FirebaseJobTest({'test': 'test2'})
+    job.start_job()
+    job = FirebaseJobTest({'test': 'test3'})
+    job.start_job()
+    job.cancel()
+    job = FirebaseJobTest({'test': 'test4'})
+    job.start_job()
+    job = FirebaseJobTest({'test': 'test5'})
+    job.start_job()
+    job = FirebaseJobTest({'test': 'test6'})
+    job.start_job()
+    while job.status != 'complete':
+        pass

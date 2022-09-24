@@ -28,7 +28,8 @@ def append_user_info(author, data):
         'mention': author.mention,
         'author-id': author.id,
         'avatar': author.avatar.url
-    };
+    }
+    return data
 
 def add_record(node, id, author, prompt, url, model, upscaled=False, parameters=None):
     size = getimageinfo.getsizes(url)

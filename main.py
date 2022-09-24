@@ -1,13 +1,17 @@
+import asyncio
 import json
 import os
 import pickle
+import traceback
+from queue import Queue
 
 from enum import Enum
 
 from firebase_admin import db
 
 from database_sync import sync_midjourney_message
-from firebase_job import FirebaseJob
+from firebase_job_util import FirebaseUpdateEvent
+from firebase_sd_job import FirebaseJob, StableDiffusionFirebaseJob
 from art_gallery_logger import log_prompt, append_user_info, log_job
 from art_gallery_logger import log_message
 
@@ -20,7 +24,7 @@ from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from replicate.exceptions import ModelError, ReplicateError
 
-
+from result_view import ResultView, JobRunner
 from sdbot_config_manager import dbref, userdata, config, bot, save_user_data
 
 def get_user_data(user):
@@ -237,7 +241,6 @@ async def queue(ctx, *, prompt, height: int=512, width: int=512,  ddim_steps: in
     sampler_name = sampler_name.value
 
     data={
-        "worker": node,
         "type": "txt2img",
         "parameters": {
             "prompt": prompt,
@@ -271,8 +274,8 @@ async def queue(ctx, *, prompt, height: int=512, width: int=512,  ddim_steps: in
     toggles.append(2)
     toggles.append(3)
 
-    append_user_info(ctx.author, data['parameters'])
-    job = FirebaseJob(ctx, dbref, data, prompt, options)
+    data = append_user_info(ctx.author, data)
+    job = StableDiffusionFirebaseJob(ctx=ctx, data=data, preferred_worker=node)
     await job.run()
 
 @bot.slash_command(description="Generate an image from a text prompt using the stable-diffusion model")
@@ -303,8 +306,101 @@ async def on_raw_reaction_add(payload):
     message = await channel.fetch_message(payload.message_id)  # Get Message object from ID
     await log_midjourney(message)
 
+dataqueue = Queue()
+@bot.event
+async def on_ready():
+    print(f'{bot.user} has connected to Discord!')
+
+    while True:
+
+        while dataqueue.qsize() > 0:
+            data = dataqueue.get()
+            try:
+                await process_data(data)
+            except Exception as e:
+                print(e)
+                traceback.print_exc()
+
+        await asyncio.sleep(1)
+
+class QueueJobRunner(JobRunner):
+    def __init__(self, ctx, data, preferred_worker=None):
+        self.ctx = ctx
+        self.data = data
+        self.preferred_worker = preferred_worker
+
+    async def run(self):
+        job = StableDiffusionFirebaseJob(ctx=self.ctx, data=self.data, preferred_worker=self.preferred_worker)
+        await job.run()
+
+async def process_data(jobData):
+    print(jobData)
+    if 'job' in jobData and 'discord-message' in jobData['job']:
+        discordmsg = jobData['job']['discord-message']
+        job = jobData['job']['name']
+        status = jobData['job']['status']
+        data = jobData['data']
+        if 'worker' in jobData['job']:
+            worker = jobData['job']['worker']
+        else:
+            worker = None
+        print(jobData)
+        channel = discordmsg['channel-id']
+        m = None
+        c = bot.get_channel(channel)
+        if 'message-id' in discordmsg:
+            message = discordmsg['message-id']
+            try:
+                m = await c.fetch_message(message)
+            except discord.errors.NotFound:
+                m = None
+        mention = discordmsg['mention']
+        print(f'discord msg {discordmsg}')
+        if 'results-sent' not in discordmsg:
+            if status == 'complete':
+                result_view = ResultView(c, job, dbref, QueueJobRunner(c, data, worker))
+                result_view.msg = m
+                msg = await result_view.show_complete(jobData)
+                if msg is not None:
+                    dbref.child('jobs').child('data').child(job).child('job').child('discord-message').child('message-id').set(msg.id)
+                dbref.child('jobs').child('data').child(job).child('job').child('discord-message').child('results-sent').set(True)
+            elif m is not None:
+                result_view = ResultView(c, job, dbref, QueueJobRunner(c, data, worker))
+                result_view.msg = m
+
+                if status == 'processing':
+                    status = f'Your job is being processed by {worker}! Waiting for first image...'
+                    if 'images' in data and len(data['images']) > 0:
+                        status = f"Your job is being processed by {worker}! Iteration {len(data['images'])} of {data['parameters']['n_iter']}"
+                    await result_view.show_status(jobData, status)
+                else:
+                    await result_view.show_status(jobData, f'Your job is currently in the following state: {status}')
+
+
+def result_handler(result):
+    ev = FirebaseUpdateEvent(result)
+    print(f"Result: {ev}")
+    if ev.path == '/':
+        if ev.data is not None:
+            for job in ev.data.keys():
+                jobData = ev.data[job]
+                dataqueue.put(jobData)
+    elif ev.segments[-1] == 'images':
+        job = ev.segments[0]
+        j = dbref.child('jobs').child('data').child(job).get()
+        dataqueue.put(j)
+    elif ev.segments[-1] == 'job' and 'status' in ev.data:
+        job = ev.segments[0]
+        j = dbref.child('jobs').child('data').child(job).get()
+        dataqueue.put(j)
+
+
+
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
+    print("Listening for updates to data...")
+    dbref.child('jobs').child('data').listen(result_handler)
+    print("Connecting to discord...")
     bot.run(os.getenv("DISCORD_TOKEN"))
 
 # See PyCharm help at https://www.jetbrains.com/help/pycharm/

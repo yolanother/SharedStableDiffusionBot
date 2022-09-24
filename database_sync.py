@@ -2,6 +2,7 @@ import re
 
 from google.cloud.firestore_v1 import ArrayUnion
 
+import getimageinfo
 from sdbot_config_manager import dsref, dbref
 from art_data import Art, Avatar, Author, Prompt, Parameters
 
@@ -11,9 +12,12 @@ def sync_midjourney_message(message):
     author = Author.from_discord_message(message)
     arts = Art.from_midjourney_message(message)
     for art in arts:
-        dsref.collection(u'art').document(art.id).set(art.to_dict())
+        data = art.to_dict()
+        dsref.collection(u'art').document(art.id).set(data)
         dsref.collection(u'prompts').document(art.parameters.prompt.prompt.replace('/', '')).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
         dsref.collection(u'models').document(art.model).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
+        (size, (x, y)) = getimageinfo.getsizes(data['url'])
+        dsref.collection(u'art').document(art.id).set({u'width': x, u'height': y}, merge=True)
     dsref.collection(u'authors').document(author.id).set(author.to_dict())
 
 def sync_job(job):
@@ -30,8 +34,6 @@ def sync_job(job):
         if len(images) > 0:
             dsref.collection(u'prompts').document(prompt.prompt).set({u'images': ArrayUnion(images)}, merge=True)
 
-        dbref.child("jobs").child("queue").child(job['name']).delete()
-        dbref.child("jobs").child("completed").child(job['name']).set(job)
         dsref.collection(u'authors').document(author.id).set(author.to_dict())
     except Exception as e:
         print (e)
@@ -80,4 +82,19 @@ def flush_queue():
         job = jobs[name]
         dbref.child("jobs").child("queue").child(job['name']).delete()
         dbref.child("jobs").child("completed").child(job['name']).set(job)
+
+def fix_timestamps():
+    print('Fixing timestamps...')
+    records = dsref.collection(u'art').where('width', '==', -1).stream()
+    print(f"Records: {records}")
+    for r in records:
+        record = r.to_dict()
+        print(r.id)
+        print(r.to_dict())
+        (size, (x, y)) = getimageinfo.getsizes(record['url'])
+        print(f"size: {x}x{y}")
+        dsref.collection(u'art').document(r.id).set({u'width': x, u'height': y}, merge=True)
+
+if __name__ == '__main__':
+    fix_timestamps()
 
