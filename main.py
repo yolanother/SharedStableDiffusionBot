@@ -9,7 +9,7 @@ from enum import Enum
 
 from firebase_admin import db
 
-from database_sync import sync_midjourney_message
+from database_sync import sync_midjourney_message, sync_job, sync_job_by_name
 from firebase_job_util import FirebaseUpdateEvent
 from firebase_sd_job import FirebaseJob, StableDiffusionFirebaseJob
 from art_gallery_logger import log_prompt, append_user_info, log_job
@@ -330,6 +330,12 @@ class QueueJobRunner(JobRunner):
         self.preferred_worker = preferred_worker
 
     async def run(self):
+        if 'name' in self.data:
+            del self.data['name']
+        if 'images' in self.data:
+            del self.data['images']
+        if 'grid' in self.data:
+            del self.data['grid']
         job = StableDiffusionFirebaseJob(ctx=self.ctx, data=self.data, preferred_worker=self.preferred_worker)
         await job.run()
 
@@ -357,6 +363,13 @@ async def process_data(jobData):
         mention = discordmsg['mention']
         print(f'discord msg {discordmsg}')
         if 'results-sent' not in discordmsg:
+            if status == 'failed':
+                result_view = ResultView(c, job, dbref, QueueJobRunner(c, data, worker))
+                result_view.msg = m
+                msg = await result_view.show_status(jobData, "Failed")
+                if msg is not None:
+                    dbref.child('jobs').child('data').child(job).child('job').child('discord-message').child('message-id').set(msg.id)
+                dbref.child('jobs').child('data').child(job).child('job').child('discord-message').child('results-sent').set(True)
             if status == 'complete':
                 result_view = ResultView(c, job, dbref, QueueJobRunner(c, data, worker))
                 result_view.msg = m
@@ -364,6 +377,7 @@ async def process_data(jobData):
                 if msg is not None:
                     dbref.child('jobs').child('data').child(job).child('job').child('discord-message').child('message-id').set(msg.id)
                 dbref.child('jobs').child('data').child(job).child('job').child('discord-message').child('results-sent').set(True)
+                sync_job_by_name(job)
             elif m is not None:
                 result_view = ResultView(c, job, dbref, QueueJobRunner(c, data, worker))
                 result_view.msg = m
@@ -384,14 +398,22 @@ def result_handler(result):
         if ev.data is not None:
             for job in ev.data.keys():
                 jobData = ev.data[job]
+                jobData['name'] = job
                 dataqueue.put(jobData)
+    elif ev.segments[-1] == 'grid':
+        job = ev.segments[0]
+        j = dbref.child('jobs').child('data').child(job).get()
+        j['name'] = job
+        dataqueue.put(j)
     elif ev.segments[-1] == 'images':
         job = ev.segments[0]
         j = dbref.child('jobs').child('data').child(job).get()
+        j['name'] = job
         dataqueue.put(j)
     elif ev.segments[-1] == 'job' and 'status' in ev.data:
         job = ev.segments[0]
         j = dbref.child('jobs').child('data').child(job).get()
+        j['name'] = job
         dataqueue.put(j)
 
 

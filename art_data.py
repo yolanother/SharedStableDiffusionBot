@@ -15,8 +15,8 @@ class Avatar:
 
     @staticmethod
     def from_job(job):
-        if 'parameters' in job and 'user' in job['parameters'] and 'avatar' in job['parameters']['user']:
-            return Avatar(job['parameters']['user']['avatar'])
+        if 'user' in job and 'avatar' in job['user']:
+            return Avatar(job['user']['avatar'])
 
         return None
 
@@ -38,25 +38,31 @@ class Author:
 
     @staticmethod
     def id_from_job(job):
-        if 'parameters' not in job:
+        if 'data' not in job or 'user' not in job['data']:
             return None
-        if 'author-id' not in job['parameters']:
+        if 'author-id' not in job['data']['user']:
             return None
-        return job['parameters']['author-id']
+        id = f"{job['data']['user']['author-id']}"
+        if 'discord-message' in job and not id.startswith("d::"):
+            id = f"d::{id}"
+        return f"{id}"
 
     @staticmethod
     def from_job(job):
+        jobData = job
+        if 'data' in job:
+            jobData = job['data']
         id = Author.id_from_job(job)
         if id is None:
             return None
         if id in authors:
             return authors[id]
 
-        user = job['parameters']['user']
-        username = 'username' in user if user['username'] else 'unknown'
-        mention = 'mention' in user if user['mention'] else 'unknown'
-        userid = 'author-id' in user if user['author-id'] else 'unknown'
-        avatar = Avatar.from_job(job)
+        user = jobData['user']
+        username = user['username'] if 'username' in user else 'unknown'
+        mention = user['mention'] if 'mention' in user else 'unknown'
+        userid = user['author-id'] if 'author-id' in user else 'unknown'
+        avatar = Avatar.from_job(jobData)
         author = Author(username, mention, userid, avatar)
         authors[id] = author
         return author
@@ -108,6 +114,11 @@ class Prompt:
 
     @staticmethod
     def from_job(job):
+        if 'data' in job:
+            job = job['data']
+        if 'parameters' not in job or 'prompt' not in job['parameters']:
+            print(f"No prompt found in {job}")
+            return None
         prompt = job['parameters']['prompt'] if 'parameters' in job and 'prompt' in job['parameters'] else None
         if prompt is None:
             return None
@@ -203,23 +214,27 @@ class Art:
 
     @staticmethod
     def from_job(job):
+        jobData = job['data']
+        if 'parameters' not in jobData:
+            return
+
         arts = []
         id = 0
-        if 'images' in job:
-            for image in job['images']:
+        if 'images' in jobData:
+            for image in jobData['images']:
                 author = Author.from_job(job)
                 model = 'stable-diffusion'
-                if 'model' in job['parameters']:
-                    model = job['parameters']['model']
+                if 'model' in jobData['parameters']:
+                    model = jobData['parameters']['model']
                 arts.append(Art(
                     f"{job['name']}::{id}",
                     image,
                     author,
-                    Parameters.from_job(job),
+                    Parameters.from_job(jobData),
                     model,
-                    int(job['parameters']['width']),
-                    int(job['parameters']['height']),
-                    float(job['timestamp']) if 'timestamp' in job else None
+                    int(jobData['parameters']['width']),
+                    int(jobData['parameters']['height']),
+                    float(job['job']['timestamp']) if 'job' in job and 'timestamp' in job['job'] else None
                 ))
                 id += 1
         return arts

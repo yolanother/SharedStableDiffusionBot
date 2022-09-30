@@ -31,8 +31,7 @@ class ResultView(discord.ui.View):
     async def show_status(self, data, status):
         self.data = data
         text = f"“{self.prompt()}”\n> {self.mention()}, {status}"
-        await self.send(text)
-        return self.msg
+        return await self.send(text)
 
     async def show_complete(self, data):
         self.data = data
@@ -49,6 +48,7 @@ class ResultView(discord.ui.View):
 
         if not url:
             print(f"Called complete without result data. {data}")
+            await self.show_status(data, "Failed.")
             return self.msg
 
         name = os.path.basename(urlparse(url).path)
