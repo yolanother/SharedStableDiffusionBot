@@ -56,7 +56,7 @@ class ResultView(discord.ui.View):
         if self.msg is not None:
             self.msg = None
 
-        print ("Sending final result...")
+        print("Sending final result...")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:

@@ -62,7 +62,10 @@ class FirebaseJob:
 
             for segment in ev.segments[:-1]:
                 d = d[segment]
-            d[ev.segments[-1]] = status.data
+            if type(status) is dict and 'data' in status and 'name' in status['data']:
+                d[ev.segments[-1]] = status['data']['name']
+            else:
+                d[ev.segments[-1]] = status.job
 
         self.on_data_updated()
 

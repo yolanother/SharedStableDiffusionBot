@@ -26,13 +26,26 @@ def load_config():
 config = load_config()
 default_app = None
 dbref = None
+dsref = None
 try:
     cred_obj = firebase_admin.credentials.Certificate(config["firebase"])
-    default_app = firebase_admin.initialize_app(cred_obj, {
+    backend_app = firebase_admin.initialize_app(cred_obj, {
         'databaseURL': config["firebase-url"]
-    })
-    dbref = db.reference("/")
-    dsref = firestore.client()
+    }, name="backend")
+    dbref = db.reference("/", backend_app)
+except ValueError as e:
+    print(e)
+    pass
+
+webdbref = None
+try:
+    print(config["firebase-web"])
+    cred_obj = firebase_admin.credentials.Certificate(config["firebase-web"])
+    web_app = firebase_admin.initialize_app(cred_obj, {
+        'databaseURL': config["firebase-web-url"]
+    }, name='frontend')
+    webdbref = db.reference("/", web_app)
+    dsref = firestore.client(web_app)
 except ValueError as e:
     print(e)
     pass

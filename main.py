@@ -11,6 +11,7 @@ from firebase_admin import db
 
 from database_sync import sync_midjourney_message, sync_job, sync_job_by_name
 from firebase_job_util import FirebaseUpdateEvent
+from firebase_sd_api_job import StableDiffusionFirebaseApiJob, data_listener
 from firebase_sd_job import FirebaseJob, StableDiffusionFirebaseJob
 from art_gallery_logger import log_prompt, append_user_info, log_job
 from art_gallery_logger import log_message
@@ -25,7 +26,9 @@ from dotenv import load_dotenv
 from replicate.exceptions import ModelError, ReplicateError
 
 from result_view import ResultView, JobRunner
-from sdbot_config_manager import dbref, userdata, config, bot, save_user_data
+from sdbot_config_manager import dbref, userdata, config, bot, save_user_data, webdbref
+
+completedJobs = dict()
 
 def get_user_data(user):
     if user not in userdata:
@@ -341,7 +344,21 @@ class QueueJobRunner(JobRunner):
 
 async def process_data(jobData):
     print(jobData)
-    if 'job' in jobData and 'discord-message' in jobData['job']:
+    if 'job' in jobData and 'source' in jobData['job'] and jobData['job']['source'] == 'api':
+        job = jobData['name']
+        if 'job-synced' in jobData['job'] and jobData['job']['job-synced'] == True:
+            try:
+                dbref.child('jobs').child('data').child(job).delete()
+            except Exception as e:
+                print(e)
+                traceback.print_exc()
+        if 'status' in jobData['job'] and jobData['job']['status'] == 'complete':
+            sync_job_by_name(jobData['name'])
+        else:
+            if 'data' in jobData and 'images' in jobData['data']:
+                sync_job_by_name(jobData['name'], False)
+            StableDiffusionFirebaseApiJob(jobData['name'], jobData).run()
+    elif 'job' in jobData and 'discord-message' in jobData['job']:
         discordmsg = jobData['job']['discord-message']
         job = jobData['job']['name']
         status = jobData['job']['status']
@@ -370,7 +387,8 @@ async def process_data(jobData):
                 if msg is not None:
                     dbref.child('jobs').child('data').child(job).child('job').child('discord-message').child('message-id').set(msg.id)
                 dbref.child('jobs').child('data').child(job).child('job').child('discord-message').child('results-sent').set(True)
-            if status == 'complete':
+            if status == 'complete' and job not in completedJobs:
+                completedJobs[job] = True
                 result_view = ResultView(c, job, dbref, QueueJobRunner(c, data, worker))
                 result_view.msg = m
                 msg = await result_view.show_complete(jobData)
@@ -386,20 +404,30 @@ async def process_data(jobData):
                     status = f'Your job is being processed by {worker}! Waiting for first image...'
                     if 'images' in data and len(data['images']) > 0:
                         status = f"Your job is being processed by {worker}! Iteration {len(data['images'])} of {data['parameters']['n_iter']}"
+                        sync_job_by_name(job, False)
                     await result_view.show_status(jobData, status)
                 else:
                     await result_view.show_status(jobData, f'Your job is currently in the following state: {status}')
+        else:
+            dbref.child('jobs').child('data').child(job).delete()
 
-
-def result_handler(result):
-    ev = FirebaseUpdateEvent(result)
+def result_handler(ev):
     print(f"Result: {ev}")
     if ev.path == '/':
         if ev.data is not None:
-            for job in ev.data.keys():
-                jobData = ev.data[job]
-                jobData['name'] = job
-                dataqueue.put(jobData)
+            if 'source' in ev.data and ev.data['source'] == 'api':
+                print("Processing api request...")
+                StableDiffusionFirebaseApiJob(ev.data).run()
+            else:
+                for job in ev.data.keys():
+                    jobData = ev.data[job]
+                    jobData['name'] = job
+                    dataqueue.put(jobData)
+    elif ev.segments[0] in data_listener:
+        ev.path = ev.path.substring(ev.segments[0].length + 1)
+        ev.segments = ev.segments[1:]
+        print(f"Updated request for registered child: {ev}")
+        data_listener[ev.segments[0]].queue_event(ev)
     elif ev.segments[-1] == 'grid':
         job = ev.segments[0]
         j = dbref.child('jobs').child('data').child(job).get()
@@ -416,12 +444,48 @@ def result_handler(result):
         j['name'] = job
         dataqueue.put(j)
 
+def node_syncer(ev):
+    print(f"Syncing node state: {ev}")
+    try:
+        if ev.event_type == 'put':
+            webdbref.child('jobs').child('nodes').set(ev.data)
+    except:
+        print("Error syncing nodes")
 
+def queue_job_data_for_processing(job):
+    jobData = dbref.child("jobs").child("data").child(job).get()
+    if jobData is not None:
+        jobData['name'] = job
+        dataqueue.put(jobData)
+
+def full_syncer(result):
+    ev = FirebaseUpdateEvent(result)
+    print(f"Syncing full state: {ev}")
+
+    if ev.path == '/':
+        data = ev.child('data')
+        if data.data is not None:
+            keys = data.data.keys()
+            for child in keys:
+                queue_job_data_for_processing(child)
+            node = ev.child('nodes')
+            keys = node.data.keys()
+            for child in keys:
+                node_syncer({child: node.child(child)})
+    elif ev.segments[0] == 'nodes':
+        try:
+            webdbref.child(f'{ev.path}'.lstrip('/')).set(ev.data)
+        except:
+            print("Error syncing nodes")
+            traceback.print_exc()
+    elif len(ev.segments) > 1:
+        job = ev.segments[1]
+        queue_job_data_for_processing(job)
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     print("Listening for updates to data...")
-    dbref.child('jobs').child('data').listen(result_handler)
+    dbref.child('jobs').listen(full_syncer)
     print("Connecting to discord...")
     bot.run(os.getenv("DISCORD_TOKEN"))
 

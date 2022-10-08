@@ -3,13 +3,19 @@ import requests
 from art_data import Art
 from sdbot_config_manager import config
 
-def post(endpoint, data):
+def post(endpoint, data, *groups):
     headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + config["api-token"],
         'Accept': 'application/json'
     }
-    r = requests.post(config["api-url"] + endpoint, headers=headers, json=data)
+    url = config["api-url"] + endpoint
+    if len(groups) > 0:
+        url += "?"
+        for group in groups:
+            url += f"groups[]={group}&"
+
+    r = requests.post(url, headers=headers, json=data)
     print(r)
     print(f"Response: {r.text}")
 

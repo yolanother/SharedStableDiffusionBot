@@ -15,7 +15,7 @@ def sync_midjourney_message(message):
     arts = Art.from_midjourney_message(message)
     for art in arts:
         data = art.to_dict()
-        post("submit", data);
+        post("submit", data)
         dsref.collection(u'art').document(art.id).set(data)
         dsref.collection(u'prompts').document(art.parameters.prompt.prompt.replace('/', '')).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
         dsref.collection(u'models').document(art.model).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
@@ -25,10 +25,15 @@ def sync_midjourney_message(message):
 
     dsref.collection(u'authors').document(author.id).set(author.to_dict())
 
-def sync_job_by_name(jobName):
+def sync_job_by_name(jobName, markSynced=True):
     job = dbref.child("jobs").child("data").child(jobName).get()
-    job['name'] = jobName
-    sync_job(job)
+    if job is not None and 'job' in job and 'job-synced' not in job['job']:
+        job['name'] = jobName
+        sync_job(job)
+        if markSynced:
+            dbref.child('jobs').child('data').child(jobName).child('job').child('job-synced').set(True)
+            dbref.child('jobs').child('queue').child(jobName).delete()
+
 
 def sync_job(job):
     print (f'Syncing {job["name"]}...')
@@ -40,7 +45,7 @@ def sync_job(job):
             for art in arts:
                 data = art.to_dict()
                 print("Syncing to artapi...")
-                post("submit", data);
+                post("submit", data, job['name'])
                 print("done.")
 
             print ("Syncing to firestore...")
