@@ -8,3 +8,9 @@ pillow
 nest-asyncio
 emoji
 boto3
+
+pywinauto
+colorama
+config
+pyperclip
+openai

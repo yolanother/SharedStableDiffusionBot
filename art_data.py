@@ -84,7 +84,10 @@ class Author:
             return None
         if id in authors:
             return authors[id]
-        author = Author(author.display_name, author.mention, f'd::{author.id}', Avatar(author.avatar.url))
+        url = None
+        if author and author.avatar:
+            url = author.avatar.url
+        author = Author(author.display_name, author.mention, f'd::{author.id}', Avatar(url))
         authors[author.id] = author
         return author
 
@@ -156,12 +159,13 @@ class Parameters:
         return None
 
     @classmethod
-    def from_string(cls, param):
+    def from_string(cls, param, upscaled=False):
         splitparams = param.split('--')
         prompt = Prompt.from_string(splitparams[0])
         parameters = dict()
         parameters['prompt'] = param
-        parameters['upscaled'] = param.find("upscaled") != -1
+
+        parameters['upscaled'] = upscaled or param.lower().find("upscale") != -1
         for p in splitparams:
             kvp = p.split(' ', 1)
             key = kvp[0].strip()
@@ -185,6 +189,17 @@ class Rating:
         }
 
 @dataclass
+class Source:
+    uri: str
+    service: str
+
+    def to_dict(self):
+        return {
+            'uri': self.uri,
+            'service': self.service
+        }
+
+@dataclass
 class Art:
     id: str
     url: str
@@ -195,6 +210,7 @@ class Art:
     height: int
     timestamp: float
     aspect_ratio = property(lambda self: self.width / float(self.height) if self.width is not None and self.height is not None else None)
+    source: Source = None
 
     def to_ref(self):
         return {'id': self.id, 'url': self.url}
@@ -209,7 +225,8 @@ class Art:
             'width': self.width,
             'height': self.height,
             'aspect_ratio': self.aspect_ratio,
-            'timestamp': self.timestamp
+            'timestamp': self.timestamp,
+            'source': self.source.to_dict() if self.source is not None else None
         }
 
     @staticmethod
@@ -259,6 +276,7 @@ class Art:
     def from_midjourney_attachment(message, attachment):
         author = Author.from_discord_message(message)
         prompt = message.content
+        print("AARON PROMPT IS: " + prompt)
         result = re.search('\*\*(.*)\*\*', prompt)
         if result is not None:
             prompt = result.group(1)
@@ -267,9 +285,10 @@ class Art:
             f'd::{message.id}',
             attachment.url,
             author,
-            Parameters.from_string(prompt),
+            Parameters.from_string(prompt, message.content.lower().find("upscaled") != -1),
             'midjourney',
             -1,
             -1,
-            message.created_at.timestamp())
+            message.created_at.timestamp(),
+            Source(message.jump_url, 'discord'))
 

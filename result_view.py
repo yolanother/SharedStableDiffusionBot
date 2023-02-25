@@ -28,10 +28,31 @@ class ResultView(discord.ui.View):
     def mention(self):
         return self.data['data']['user']['mention']
 
+    async def get_image(self, url, data):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        d = io.BytesIO(await resp.read())
+                        return discord.File(d, data['name'] + ".png")
+        except Exception as e:
+            print(f"Error sending image: {url}, {e}, {data}")
+            traceback.print_exc()
+        return None
+
     async def show_status(self, data, status):
         self.data = data
         text = f"“{self.prompt()}”\n> {self.mention()}, {status}"
-        return await self.send(text)
+
+        if 'images' in data:
+            for image in images:
+                text += f"\n{image}"
+
+        file = None
+        #if 'grid' in data['data']:
+        #    file = await self.get_image(data['data']['grid'], data)
+
+        return await self.send(text, file=file)
 
     async def show_complete(self, data):
         self.data = data
@@ -43,8 +64,11 @@ class ResultView(discord.ui.View):
         url = ""
         if 'grid' in data['data']:
             url = data['data']['grid']
-        elif 'images' in data['data']:
-            url = data['data']['images'][0]
+
+        imageText = ""
+        if 'images' in data:
+            for image in images:
+                imageText += f"\n{image}"
 
         if not url:
             print(f"Called complete without result data. {data}")
@@ -61,10 +85,10 @@ class ResultView(discord.ui.View):
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
                     if resp.status != 200:
-                        self.msg = message = await self.send(f"“{self.prompt()}”\n> {self.mention()} your task has completed!\n{url}")
+                        self.msg = message = await self.send(f"“{self.prompt()}”\n> {self.mention()} your task has completed!\n{url}{imageText}")
                     else:
                         data = io.BytesIO(await resp.read())
-                        self.msg = await self.send(f"“{self.prompt()}”\n> {self.mention()} your task has completed!", file=discord.File(data, name))
+                        self.msg = await self.send(f"“{self.prompt()}”\n> {self.mention()} your task has completed!{imageText}", file=discord.File(data, name))
             print("Done!")
             if delmsg is not None:
                 await delmsg.delete()

@@ -16,14 +16,14 @@ def sync_midjourney_message(message):
     for art in arts:
         data = art.to_dict()
         post("submit", data)
-        dsref.collection(u'art').document(art.id).set(data)
-        dsref.collection(u'prompts').document(art.parameters.prompt.prompt.replace('/', '')).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
-        dsref.collection(u'models').document(art.model).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
+        #dsref.collection(u'art').document(art.id).set(data)
+        #dsref.collection(u'prompts').document(art.parameters.prompt.prompt.replace('/', '')).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
+        #dsref.collection(u'models').document(art.model).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
         (size, (x, y)) = getimageinfo.getsizes(data['url'])
-        dsref.collection(u'art').document(art.id).set({u'width': x, u'height': y}, merge=True)
+        #dsref.collection(u'art').document(art.id).set({u'width': x, u'height': y}, merge=True)
         index_art_words(art)
 
-    dsref.collection(u'authors').document(author.id).set(author.to_dict())
+    #dsref.collection(u'authors').document(author.id).set(author.to_dict())
 
 def sync_job_by_name(jobName, markSynced=True):
     job = dbref.child("jobs").child("data").child(jobName).get()
@@ -51,19 +51,19 @@ def sync_job(job):
             print ("Syncing to firestore...")
             for art in arts:
                 images.append(art.to_ref())
-                try:
-                    dsref.collection(u'art').document(art.id).set(data)
-                    dsref.collection(u'models').document(art.model).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
-                except Exception as e:
-                    print(f"Error: {e}")
+                #try:
+                #    dsref.collection(u'art').document(art.id).set(data)
+                #    dsref.collection(u'models').document(art.model).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
+                #except Exception as e:
+                #    print(f"Error: {e}")
             print("done.")
 
             prompt = Prompt.from_job(job)
-            if len(images) > 0:
-                dsref.collection(u'prompts').document(prompt.prompt).set({u'images': ArrayUnion(images)}, merge=True)
+            #if len(images) > 0:
+            #    dsref.collection(u'prompts').document(prompt.prompt).set({u'images': ArrayUnion(images)}, merge=True)
 
-            if author is not None and author.id is not None:
-                dsref.collection(u'authors').document(f"{author.id}").set(author.to_dict())
+            #if author is not None and author.id is not None:
+            #    dsref.collection(u'authors').document(f"{author.id}").set(author.to_dict())
     except Exception as e:
         print (e)
         traceback.print_exc()
@@ -96,8 +96,8 @@ def sync_realtime():
 
             print (f'Syncing {art.id}...')
             print (art.to_dict())
-            dsref.collection(u'art').document(f'{art.id}').set(art.to_dict())
-            dsref.collection(u'prompts').document(art.parameters.prompt.prompt.replace('/', '')).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
+            #dsref.collection(u'art').document(f'{art.id}').set(art.to_dict())
+            #dsref.collection(u'prompts').document(art.parameters.prompt.prompt.replace('/', '')).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
 
 def sync_jobs():
     jobs = dbref.child("jobs").child("data").get()
@@ -154,7 +154,7 @@ def index_art_words(art):
     total = len(words.keys())
     current = 0
     for key in words.keys():
-        dsref.collection(u'words').document(f'{key}').set({'word': key, 'records': ArrayUnion(words[key])}, merge=True)
+        #dsref.collection(u'words').document(f'{key}').set({'word': key, 'records': ArrayUnion(words[key])}, merge=True)
         current += 1
         print(f"Indexed {key} ({current}/{total})")
 
