@@ -165,7 +165,9 @@ class Parameters:
         parameters = dict()
         parameters['prompt'] = param
 
-        parameters['upscaled'] = upscaled or param.lower().find("upscale") != -1
+        parameters['upscaled'] = upscaled or param.lower().find("upscale") != -1 \
+                or param.lower().find("- image #") != -1
+        print (f"Upscaled: {upscaled}, {param}")
         for p in splitparams:
             kvp = p.split(' ', 1)
             key = kvp[0].strip()
@@ -192,11 +194,15 @@ class Rating:
 class Source:
     uri: str
     service: str
+    gridWidth: int = 1
+    gridHeight: int = 1
 
     def to_dict(self):
         return {
             'uri': self.uri,
-            'service': self.service
+            'service': self.service,
+            'gridWidth': self.gridWidth,
+            'gridHeight': self.gridHeight
         }
 
 @dataclass
@@ -281,14 +287,18 @@ class Art:
         if result is not None:
             prompt = result.group(1)
 
+        upscaled = message.content.lower().find("upscaled") != -1 \
+                or message.content.lower().find("- image #") != -1
+        parameters = Parameters.from_string(prompt, upscaled)
+
         return Art(
             f'd::{message.id}',
             attachment.url,
             author,
-            Parameters.from_string(prompt, message.content.lower().find("upscaled") != -1),
+            parameters,
             'midjourney',
             -1,
             -1,
             message.created_at.timestamp(),
-            Source(message.jump_url, 'discord'))
+            Source(message.jump_url, 'discord', 1 if upscaled else 2, 1 if upscaled else 2))
 

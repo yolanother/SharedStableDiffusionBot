@@ -16,7 +16,6 @@ def post(endpoint, data, *groups):
             url += f"groups[]={group}&"
 
     r = requests.post(url, headers=headers, json=data)
-    print(r)
     print(f"Response: {r.text}")
 
 if __name__ == "__main__":

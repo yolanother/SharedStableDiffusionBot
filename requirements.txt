@@ -14,3 +14,4 @@ colorama
 config
 pyperclip
 openai
+table2ascii

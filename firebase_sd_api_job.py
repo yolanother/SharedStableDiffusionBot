@@ -45,7 +45,6 @@ class StableDiffusionFirebaseApiJob:
         if(ev.data is None):
             return
 
-        print(f"Data Update: {ev}")
         if ev.path == '/':
             self.process_full_data(ev.data)
         elif ev.path == "/status":
@@ -58,7 +57,6 @@ class StableDiffusionFirebaseApiJob:
             self.queue_event(updateev)
 
     def run(self):
-        print('Listening for updates on api job request: %s' % self.name)
         data_listener[self.name] = self
         ev = FirebaseUpdateEvent()
         ev.path = '/'
@@ -75,8 +73,6 @@ class StableDiffusionFirebaseApiJob:
         self.queue_event(ev)
 
     def queue_event(self, ev):
-        print(f"Queue Update: {ev}")
-
         if ev.segments[0] == 'available-nodes' and self.status == 'requesting':
             self.queue(ev.segments[-1])
 

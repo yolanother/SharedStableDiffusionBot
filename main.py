@@ -1,13 +1,24 @@
 import asyncio
 import json
 import os
-import pickle
 import traceback
+import urllib
 from queue import Queue
+from table2ascii import table2ascii as t2a, PresetStyle
 
 from enum import Enum
 
+import chatgpt
+import discord_job_cache
+import dream_presets
+from discord_job_cache import store_to_cache, cache_job
+from mj_commands import MJSettings
+
+import aiohttp
+import requests
 from firebase_admin import db
+
+import mj_commands
 
 from database_sync import sync_midjourney_message, sync_job, sync_job_by_name
 from firebase_job_util import FirebaseUpdateEvent
@@ -27,8 +38,24 @@ from replicate.exceptions import ModelError, ReplicateError
 
 from result_view import ResultView, JobRunner
 from sdbot_config_manager import dbref, userdata, config, bot, save_user_data, webdbref
+from user_settings import get_user_settings
 
 completedJobs = dict()
+
+# Region Setting Enumbs
+
+class ChatGptCommands(Enum):
+    set_typeblock = "set_typeblock"
+    set_prefix = "set_prefix"
+    set_postfix = "set_postfix"
+    set_default_namespace = "set_default_namespace"
+    set_default_agent = "set_default_agent"
+
+class ChatGptHistoryCommands(Enum):
+    clear = "clear"
+    list = "list"
+
+# End Region
 
 def get_user_data(user):
     if user not in userdata:
@@ -83,7 +110,6 @@ def is_admin(ctx):
 
 @bot.slash_command(description="Sync past midjourney prompts with the database")
 async def sync(ctx, limit=100):
-    print (config["sync"])
     if ctx.author.id not in config["sync"]:
         print(f"Sync permission denied: {ctx.author.name} [{ctx.author.id}]")
         await ctx.respond(f"You do not have permission to run a sync.")
@@ -286,6 +312,316 @@ async def dream(ctx, *, prompt, width=512, height=512, init_image=None, upscale:
     """Generate an image from a text prompt using the stable-diffusion model"""
     await basic_prompt(ctx, "stability-ai/stable-diffusion", prompt, width, height, init_image, upscale)
 
+async def get_data(url, is_json=True):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            try:
+                if is_json:
+                    data = await response.json()
+                else:
+                    data = await response.text()
+                return data
+            except:
+                print ("Data was not proper format for json parsing and will be ignored.")
+                return None
+async def post_data(url, data, is_json=True):
+    async with aiohttp.ClientSession() as session:
+        print(f"Sending: to {url} with Data:\n{data}")
+        headers = {'Content-Type': 'application/json'}
+        async with session.post(url, json=data, headers=headers) as response:
+            try:
+                if is_json:
+                    data = await response.json()
+                else:
+                    data = await response.text()
+                return data
+            except:
+                print ("Data was not proper format for json parsing and will be ignored.")
+                return None
+
+
+
+
+
+async def embellish_prompt(prompt: str, namespace = "aiart", agent = "midjourney"):
+    # split the prompt on the first -- and use the first part as the prompt
+    split = prompt.split("--", 1)
+    processed_prompt = split[0]
+    # get the second part including the -- if the prompt was split
+    parameters = ""
+    if len(split) > 1:
+        parameters = " --" + split[1]
+
+    url = f"https://api.aiart.doubtech.com/gpt/agent?token={config['aiart-token']}&namespace={namespace}&agent={agent}&prompt={urllib.parse.quote(processed_prompt)}"
+    data = await get_data(url)
+    if 'content' in data:
+        return data['content'] + parameters
+
+    return prompt
+
+preset_list = None
+checkpoint_list = None
+
+
+@bot.slash_command(description="Get a list of available checkpoints")
+async def dreamcheckpoints(ctx):
+    global checkpoint_list
+    # Get the list of checkpoints from https://api.aiart.doubtech.com/comfyui/list-checkpoints
+    url = f"https://api.aiart.doubtech.com/comfyui/checkpoints"
+    checkpoint_list = await get_data(url)
+
+    # Convert the list of checkpoints to a table format
+    output = t2a(
+        header=["Index", "Checkpoint"],
+        body=[[i + 1, checkpoint] for i, checkpoint in enumerate(checkpoint_list)],
+        style=PresetStyle.thin_compact
+    )
+
+    await ctx.respond(content=f"```\n{output}\n```")
+
+
+@bot.slash_command(description="Get a list of dream presets")
+async def dreampresetlist(ctx):
+    global preset_list
+    # Get the list of presets from https://api.aiart.doubtech.com/comfyui/list-presets
+    url = f"https://api.aiart.doubtech.com/comfyui/list-presets"
+    preset_list = await get_data(url)
+
+    # Convert the list of presets to a table format
+    output = t2a(
+        header=["Index", "Preset"],
+        body=[[i + 1, preset] for i, preset in enumerate(preset_list)],
+        style=PresetStyle.thin_compact
+    )
+
+    await ctx.respond(content=f"```\n{output}\n```")
+
+async def getpresets(ctx: discord.AutocompleteContext):
+    global preset_list
+    if preset_list is None:
+        url = f"https://api.aiart.doubtech.com/comfyui/list-presets"
+        preset_list = await get_data(url)
+    return sorted(preset_list)
+
+
+async def getcheckpoints(ctx: discord.AutocompleteContext):
+    global checkpoint_list
+    if checkpoint_list is None:
+        url = f"https://api.aiart.doubtech.com/comfyui/checkpoints"
+        checkpoint_list = await get_data(url)
+    return sorted(checkpoint_list)
+
+
+@bot.slash_command(description="Generate an image from a text prompt using a Stable Diffusion preset")
+async def dreampreset(ctx, *, prompt, preset=discord.Option(default="Default", autocomplete=getpresets), width=512, height=512, checkpoint=discord.Option(default="", autocomplete=getcheckpoints)):
+    """Generate an image from a text prompt using a Stable Diffusion preset"""
+    await ctx.respond("Processing...", delete_after=0)
+
+    # if preset is empty set it to Default
+    if preset == "":
+        preset = "Default"
+
+    config = f"Has requested a Stable Diffusion image using the {preset} preset."
+    if checkpoint is not None:
+        config = f"Has requested a Stable Diffusion image using the {preset} preset using the {checkpoint} checkpoint."
+
+    # If the checkpoint is not none get the string value of the Option
+    if str(checkpoint) == '':
+        checkpoint = None
+
+    message = await ctx.send(content=f"**{ctx.author.display_name}** {config}\n``` {prompt}```\nYour prompt has been queued...")
+    try:
+        result = await dream_presets.execdream(f'd::{ctx.author.id}', ctx.author.name, ctx.author.avatar.url, ctx.author.mention, prompt, preset, width, height, checkpoint)
+    except Exception as e:
+        await message.edit(
+            content=f"{ctx.author.mention}\n```{prompt}```\n\nGeneration with {preset} failed! Error: {e}")
+    if result is None:
+        await message.edit(
+            content=f"{ctx.author.mention}\n```{prompt}```\n\nGeneration with {preset} failed! Error: Unknown")
+    elif 'error' in result:
+        await message.edit(content=f"{ctx.author.mention}\n```{prompt}```\n\nGeneration with {preset} failed! Error: {result['error']}")
+        return
+    else:
+        cache_job(result['id'], message)
+
+# A bot command to print the chatgpt history for an agent
+
+@bot.slash_command(description="Generate a prompt from a simple prompt")
+async def agent(ctx, *, prompt, namespace="", agent=""):
+    if namespace == "":
+        settings = get_user_settings(ctx.author.id)
+        namespace = settings.get(f"chatgpt_default_namespace", "default")
+    if agent == "":
+        settings = get_user_settings(ctx.author.id)
+        agent = settings.get(f"chatgpt_default_agent", "default")
+
+    await chatgpt(ctx, prompt=prompt, namespace=namespace, agent=agent, use_history=False, append_history=False)
+
+# A bot command to generate a prompt
+@bot.slash_command(description="Generate a prompt from a simple prompt")
+async def chatgpt(ctx, *, prompt, namespace="", agent="", use_history=True, append_history=True):
+    """Generate a prompt from a simple prompt"""
+    await ctx.respond("Processing...", delete_after=0)
+
+    # get settings from user settings via author's id
+    settings = get_user_settings(ctx.author.id)
+    agent, namespace = await get_agent(ctx, agent, namespace)
+
+    message = await ctx.send(content=f"**{ctx.author.name}**```{prompt}```\nChat gpt is typing...")
+
+    settings = get_user_settings(ctx.author.id)
+    history = []
+    if use_history:
+        history = settings.get(f"chatgpt_history::{namespace}::{agent}", [])
+    else:
+        # create a new history array from the old one
+        h = []
+        for entry in history:
+            if entry['role'] == "user":
+                h.append(entry)
+        history = h
+
+    history.append({"role": "user", "content": prompt})
+
+    # limit history entries to the last 10
+    history = history[-10:]
+
+    url = f"https://api.aiart.doubtech.com/gpt/agent?token={config['aiart-token']}&namespace={namespace}&agent={agent}"
+    body = {"messages": history}
+    response = await post_data(url, body)
+    if 'content' in response:
+        embellished_prompt = response['content']
+
+    print(f"Response: {embellished_prompt}")
+
+    if prompt != embellished_prompt:
+        if append_history:
+            print("Appending embellished prompt to history")
+            history.append({"role": "agent", "content": embellished_prompt})
+            settings.save()
+
+        prefix = settings.get(f"chatgpt_prefix::{namespace}::{agent}", "")
+        postfix = settings.get(f"chatgpt_postfix::{namespace}::{agent}", "")
+
+        await message.edit(content=f"{ctx.author.mention}\n```{prompt}```\n\n**Chat GPT:**\n{prefix}{embellished_prompt}{postfix}")
+    else:
+        await message.edit(content=f"Prompt: \n```{prompt}```")
+
+
+# a command for chatgpt settings
+@bot.slash_command(description="View and manage your settings for ChatGPT agents")
+async def chatgpt_settings(ctx, *, command: ChatGptCommands = ChatGptCommands.set_typeblock, typeblock="", prefix="", postfix="", namespace="", agent=""):
+    print(f"exec command: {command}")
+    if command == ChatGptCommands.set_typeblock:
+        await chatgpt_typeblock(ctx, typeblock=typeblock, namespace=namespace, agent=agent)
+    elif command == ChatGptCommands.set_prefix:
+        await chatgpt_prefix(ctx, prefix=prefix, namespace=namespace, agent=agent)
+    elif command == ChatGptCommands.set_postfix:
+        await chatgpt_postfix(ctx, postfix=postfix, namespace=namespace, agent=agent)
+    elif command == ChatGptCommands.set_default_agent:
+        await set_agent(ctx, agent=agent, namespace=namespace)
+    elif command == ChatGptCommands.set_default_namespace:
+        await set_namespace(ctx, namespace=namespace)
+    else:
+        await ctx.respond(content=f"Unknown command {command}")
+
+# A command for mj commands
+@bot.slash_command(description="A command to change the mj settings")
+async def mj_settings(ctx, *, command: MJSettings, preset_name="", settings=""):
+    # switch on the command
+    if command == MJSettings.set_settings:
+        await mj_commands.set_mj_settings(ctx, settings=settings)
+    elif command == MJSettings.get_settings:
+        await mj_commands.get_mj_settings(ctx)
+    elif command == MJSettings.create_preset:
+        await mj_commands.create_mj_preset(ctx, name=preset_name, preset=settings)
+    elif command == MJSettings.delete_preset:
+        await mj_commands.delete_mj_preset(ctx, name=preset_name)
+    elif command == MJSettings.list_presets:
+        await mj_commands.get_mj_presets(ctx)
+    elif command == MJSettings.use_preset:
+        await mj_commands.use_mj_preset(ctx, name=preset_name)
+    elif command == MJSettings.add_tag:
+        await mj_commands.tag_add(ctx, tag=settings)
+    elif command == MJSettings.remove_tag:
+        await mj_commands.tag_remove(ctx, tag=settings)
+    elif command == MJSettings.list_tags:
+        await mj_commands.tag_list(ctx)
+
+
+@bot.slash_command(description="Generate an image from a text prompt using the stable-diffusion model")
+async def mj(ctx, *, prompt, embellish: bool=False, namespace="aiart", agent="midjourney", tags="", title="", alt="", preset=""):
+    """Generate an image from a text prompt using the stable-diffusion model"""
+    await ctx.respond("Processing...", delete_after=0)
+    if embellish:
+        message = await ctx.send(content=f"Processing your prompt...\n```{prompt}```\nWaiting for embellishment...")
+    else:
+        message = await ctx.send(content=f"Processing your prompt...\n```{prompt}```")
+
+    channel_id = ctx.channel_id
+    guild_id = ctx.guild_id
+
+    channel = bot.get_channel(channel_id)
+    server = bot.get_guild(guild_id)
+
+    channel_name = channel.name if channel else "Unknown channel"
+    server_name = server.name if server else "Unknown server"
+
+    print("Received command from {0.author} in {1}/{2} com.hammerandchisel.discord://discord.com/channels/{3}/{4}".format(ctx, server_name, channel_name, guild_id, channel_id))
+
+    embellished_prompt = prompt
+    if embellish:
+        embellished_prompt = await embellish_prompt(prompt, namespace, agent)
+
+    includeMetadata = False
+    metadata = {
+    }
+
+    if title != "":
+        includeMetadata = True
+        metadata["title"] = title
+    if alt != "":
+        includeMetadata = True
+        metadata["alt"] = alt
+    if tags != "":
+        includeMetadata = True
+        metadata["tags"] = []
+        for tag in tags.split(","):
+            # trin spaces on the tag
+            tag = tag.strip()
+            metadata["tags"].append(tag)
+        settings = get_user_settings(ctx.author.id)
+        tags = settings.get("tags", [])
+        for tag in tags:
+            if tag not in metadata["tags"]:
+                metadata["tags"].append(tag)
+
+    if includeMetadata:
+        embellished_prompt = json.dumps(metadata) + "::.001 " + embellished_prompt
+        prompt = json.dumps(metadata) + "::.001 " + prompt
+
+    if embellish:
+        await message.edit(content=f"Original Prompt: \n```{prompt}```\n\nEmbellished Prompt: \n```{embellished_prompt}```")
+    else:
+        await message.edit(content=f"Prompt: \n```{prompt}```")
+    if ctx.author.id in config["midjourney"]:
+        if embellish:
+            prompt = embellished_prompt
+        mjsettings = get_user_settings(ctx.author.id).get(f"mj_settings", "")
+
+        preset = mj_commands.get_preset(ctx, preset)
+        if preset is not None:
+            mjsettings = preset
+
+        if mjsettings != "":
+            prompt += " " + mjsettings
+        await ctx.respond("Sending to Midjourney!", delete_after=10)
+        # send web request with parameters: prompt, channel_id, guild_id, channel
+        url = f"{config['midjourney-webapi']}?prompt={urllib.parse.quote(prompt)}&channel_id={channel_id}&guild_id={guild_id}&channel={channel_name}&server={server_name}"
+        await get_data(url, False)
+
+
+
 async def log_midjourney(message):
     if message.author.display_name == "Midjourney Bot" and len(message.attachments) > 0:
         sync_midjourney_message(message)
@@ -310,10 +646,14 @@ async def on_raw_reaction_add(payload):
     await log_midjourney(message)
 
 dataqueue = Queue()
+loop = asyncio.get_event_loop()
+def async_call(asyncResult):
+    loop.call_soon_threadsafe(asyncio.create_task, asyncResult)
+
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
-
+    sync_cached_jobs()
     while True:
 
         while dataqueue.qsize() > 0:
@@ -343,7 +683,6 @@ class QueueJobRunner(JobRunner):
         await job.run()
 
 async def process_data(jobData):
-    print(jobData)
     if 'job' in jobData and 'source' in jobData['job'] and jobData['job']['source'] == 'api':
         job = jobData['name']
         if 'job-synced' in jobData['job'] and jobData['job']['job-synced'] == True:
@@ -452,11 +791,63 @@ def node_syncer(ev):
     except:
         print("Error syncing nodes")
 
+
 def queue_job_data_for_processing(job):
     jobData = dbref.child("jobs").child("data").child(job).get()
     if jobData is not None:
         jobData['name'] = job
         dataqueue.put(jobData)
+
+
+async def sync_job(job_id):
+    job = discord_job_cache.get_from_cache(job_id)
+    if job is not None:
+        channel = bot.get_channel(job['channel_id'])
+        if channel:
+            message = await channel.fetch_message(job['message_id'])
+            if message is not None:
+                data = await dream_presets.get_data(f"https://api.aiart.doubtech.com/jobs-v2/job-status?id={job_id}")
+                if data is not None and 'result' in data:
+                    if data['result'] is None:
+                        content = f"{message.content}"
+                        # replace "Your prompt has been queued.." if it is there with "Job completed without creating an image.
+                        content = content.replace("Your prompt has been queued...", "Job completed without creating an image.")
+                        await message.edit(content=content)
+                        discord_job_cache.remove_from_cache(job_id)
+                    else:
+                        id = data['result']
+                        image = await dream_presets.get_data(f"https://api.aiart.doubtech.com/art?id={id}")
+                        if image is not None and len(image) > 0 and 'url' in image[0]:
+                            url = image[0]['url']
+                            print(f"Job completed with image {url}")
+                            content = message.content.replace("Your prompt has been queued...", "")
+                            embed = discord.Embed()
+                            embed.set_image(url=url)
+                            await message.edit(content=f"{content}", embed=embed)
+                            discord_job_cache.remove_from_cache(job_id)
+
+                #await message.edit(content=f"{ctx.author.mention}\nPreset: {preset}\n```{prompt}```\n\n{result['url']}")
+
+def sync_cached_jobs():
+    print("Syncing cached jobs...")
+    # Iterate over all cached job keys
+    keys = discord_job_cache.get_cache().keys()
+    for job in keys:
+        # Get the job state from https://api.aiart.doubtech.com/jobs-v2/job-status?id={job} via request
+        print(f"...{job}")
+        r = requests.get(f'https://api.aiart.doubtech.com/jobs-v2/job-status?id={job}')
+        if r.status_code == 200:
+            # If the job is complete, remove it from the cache
+            if r.json()['status'] == 'complete':
+                print("Job is complete, removing from cache and updating message.")
+                async_call(sync_job(job))
+
+
+
+def activity_syncer(result):
+    ev = FirebaseUpdateEvent(result)
+    print(f"Syncing activity: {ev}")
+    sync_cached_jobs()
 
 def full_syncer(result):
     ev = FirebaseUpdateEvent(result)
@@ -469,9 +860,10 @@ def full_syncer(result):
             for child in keys:
                 queue_job_data_for_processing(child)
             node = ev.child('nodes')
-            keys = node.data.keys()
-            for child in keys:
-                node_syncer({child: node.child(child)})
+            if node is not None and node.data is not None:
+                keys = node.data.keys()
+                for child in keys:
+                    node_syncer({child: node.child(child)})
     elif ev.segments[0] == 'nodes':
         try:
             webdbref.child(f'{ev.path}'.lstrip('/')).set(ev.data)
@@ -482,11 +874,124 @@ def full_syncer(result):
         job = ev.segments[1]
         queue_job_data_for_processing(job)
 
+
+# REGION CHAT HISTORY
+
+async def chatgpt_show_history(ctx, namespace, agent):
+    agent, namespace = await get_agent(ctx, agent, namespace)
+    settings = get_user_settings(ctx.author.id)
+    history = settings.get(f"chatgpt_history::{namespace}::{agent}", [])
+
+    # limit the number of characters shown for content to 10
+    for entry in history:
+        # Remove any discord ``` formatting for the entry
+        entry["content"] = entry["content"].replace("```", "")
+
+        if len(entry["content"]) > 50:
+            entry["content"] = entry["content"][:50] + "..."
+
+    await ctx.respond(content=f"History for {namespace}/{agent}\n```{json.dumps(history, indent=2)}```")
+
+async def chatgpt_clearhistory(ctx, namespace="", agent=""):
+    agent, namespace = await get_agent(ctx, agent, namespace)
+    settings = get_user_settings(ctx.author.id)
+    settings.set(f"chatgpt_history::{namespace}::{agent}", [])
+    await ctx.respond(content=f"Your history for {namespace}::{agent} has been cleared.")
+
+# create a command to set a type block for agent responses
+async def chatgpt_typeblock(ctx, *, typeblock="", namespace="", agent=""):
+    agent, namespace = await get_agent(ctx, agent, namespace)
+
+    settings = get_user_settings(ctx.author.id)
+    settings.set(f"chatgpt_prefix::{namespace}::{agent}", f"```{typeblock}\n")
+    settings.set(f"chatgpt_postfix::{namespace}::{agent}", f"```")
+    await ctx.respond(content=f"Type block set for {namespace}::{agent}.")
+
+
+async def get_agent(ctx, agent, namespace):
+    if namespace == "":
+        settings = get_user_settings(ctx.author.id)
+        namespace = settings.get(f"chatgpt_default_namespace", "default")
+    if agent == "":
+        settings = get_user_settings(ctx.author.id)
+        agent = settings.get(f"chatgpt_default_agent", "default")
+    return agent, namespace
+
+
+# create a commmand to set the agent's prefix for its responses
+async def chatgpt_prefix(ctx, prefix, namespace="", agent=""):
+    agent, namespace = await get_agent(ctx, agent, namespace)
+
+    settings = get_user_settings(ctx.author.id)
+    settings.set(f"chatgpt_prefix::{namespace}::{agent}", prefix)
+    await ctx.respond(content=f"Prefix for {namespace}::{agent} set to {prefix}.")
+    settings.save()
+
+
+async def chatgpt_postfix(ctx, prefix, namespace="", agent=""):
+    agent, namespace = await get_agent(ctx, agent, namespace)
+
+    settings = get_user_settings(ctx.author.id)
+    settings.set(f"chatgpt_postfix::{namespace}::{agent}", prefix)
+    await ctx.respond(content=f"Postfix for {namespace}::{agent} set to {prefix}.")
+    settings.save()
+
+
+# print the default agent
+async def default_agent(ctx):
+    settings = get_user_settings(ctx.author.id)
+    agent = settings.get(f"chatgpt_default_agent", "default")
+    namespace = settings.get(f"chatgpt_default_namespace", "default")
+    await ctx.respond(content=f"Your default agent is {namespace}/{agent}.")
+
+
+# print the default namespace
+async def default_namespace(ctx):
+    settings = get_user_settings(ctx.author.id)
+    namespace = settings.get(f"chatgpt_default_namespace", "default")
+    await ctx.respond(content=f"Your default namespace is {namespace}.")
+
+
+# A slash command to set the default agent
+async def set_agent(ctx, *, agent="default", namespace=""):
+    settings = get_user_settings(ctx.author.id)
+    settings.set(f"chatgpt_default_agent", agent)
+    if namespace != "":
+        settings.set(f"chatgpt_default_namespace", namespace)
+    await ctx.respond(content=f"Your default agent is now {agent}.")
+
+
+# A slash command to set the default namespace
+async def set_namespace(ctx, *, namespace="default"):
+    settings = get_user_settings(ctx.author.id)
+    settings.set(f"chatgpt_default_namespace", namespace)
+    await ctx.respond(content=f"Your default namespace is now {namespace}.")
+
+
+@bot.slash_command(description="View and manage your history for ChatGPT agents")
+async def chatgpt_history(ctx, *, command: ChatGptHistoryCommands = ChatGptHistoryCommands.list, namespace="", agent=""):
+    print(f"exec command: {command}")
+    if command == ChatGptHistoryCommands.list:
+        await chatgpt_show_history(ctx, namespace, agent)
+    elif command == ChatGptHistoryCommands.clear:
+        await chatgpt_clearhistory(ctx, namespace, agent)
+    else:
+        await ctx.respond(content=f"Unknown command {command}")
+
+
+# END REGION CHATGPT HISTORY
+
+
+
+
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     print("Listening for updates to data...")
+    webdbref.child('activity').listen(activity_syncer)
     dbref.child('jobs').listen(full_syncer)
+    dbref.child('activity').listen(activity_syncer)
     print("Connecting to discord...")
     bot.run(os.getenv("DISCORD_TOKEN"))
+
 
 # See PyCharm help at https://www.jetbrains.com/help/pycharm/

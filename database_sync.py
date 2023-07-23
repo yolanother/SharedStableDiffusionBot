@@ -95,7 +95,7 @@ def sync_realtime():
                       height=record['height'] if 'height' in record else None)
 
             print (f'Syncing {art.id}...')
-            print (art.to_dict())
+            #print (art.to_dict())
             #dsref.collection(u'art').document(f'{art.id}').set(art.to_dict())
             #dsref.collection(u'prompts').document(art.parameters.prompt.prompt.replace('/', '')).set({u'images': ArrayUnion([art.to_ref()])}, merge=True)
 
