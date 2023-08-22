@@ -11,6 +11,7 @@ from enum import Enum
 import chatgpt
 import discord_job_cache
 import dream_presets
+import userdatacache
 from discord_job_cache import store_to_cache, cache_job
 from mj_commands import MJSettings
 
@@ -30,6 +31,13 @@ from art_gallery_logger import log_message
 import firebase_admin
 import replicate as rep
 import discord
+
+
+import re
+import random
+
+from discord import Interaction
+from discord.ui import Button, View
 
 
 from cryptography.fernet import Fernet
@@ -359,12 +367,13 @@ async def embellish_prompt(prompt: str, namespace = "aiart", agent = "midjourney
 
     return prompt
 
+lora_list = None
 preset_list = None
 checkpoint_list = None
 
 
 @bot.slash_command(description="Get a list of available checkpoints")
-async def dreamcheckpoints(ctx):
+async def dream_checkpoints(ctx):
     global checkpoint_list
     # Get the list of checkpoints from https://api.aiart.doubtech.com/comfyui/list-checkpoints
     url = f"https://api.aiart.doubtech.com/comfyui/checkpoints"
@@ -379,9 +388,28 @@ async def dreamcheckpoints(ctx):
 
     await ctx.respond(content=f"```\n{output}\n```")
 
+@bot.slash_command(description="Get a list of loras")
+async def dream_lora_list(ctx):
+    url = f"https://api.aiart.doubtech.com/comfyui/list-loras"
+    global lora_list
+    lora_list = await get_data(url)
+    print(f"{lora_list}")
+    output_data = []
+
+    for item in lora_list:
+        print(item)
+        output_data.append([item["name"], ",".join(item["nodes"])])
+    output = t2a(
+        header=["Lora", "Nodes"],
+        body=output_data,
+        style=PresetStyle.thin_compact
+    )
+
+    await ctx.respond(content=f"```\n{output}\n```")
+
 
 @bot.slash_command(description="Get a list of dream presets")
-async def dreampresetlist(ctx):
+async def dream_preset_list(ctx):
     global preset_list
     # Get the list of presets from https://api.aiart.doubtech.com/comfyui/list-presets
     url = f"https://api.aiart.doubtech.com/comfyui/list-presets"
@@ -404,6 +432,20 @@ async def getpresets(ctx: discord.AutocompleteContext):
     return sorted(preset_list)
 
 
+async def getloras(ctx: discord.AutocompleteContext):
+    global lora_list
+    if lora_list is None:
+        url = f"https://api.aiart.doubtech.com/comfyui/list-loras"
+        lora_list = await get_data(url)
+
+    output_data = []
+
+    for item in lora_list:
+        print(item)
+        output_data.append(item["name"])
+    return sorted(output_data)
+
+
 async def getcheckpoints(ctx: discord.AutocompleteContext):
     global checkpoint_list
     if checkpoint_list is None:
@@ -412,37 +454,213 @@ async def getcheckpoints(ctx: discord.AutocompleteContext):
     return sorted(checkpoint_list)
 
 
-@bot.slash_command(description="Generate an image from a text prompt using a Stable Diffusion preset")
-async def dreampreset(ctx, *, prompt, preset=discord.Option(default="Default", autocomplete=getpresets), width=512, height=512, checkpoint=discord.Option(default="", autocomplete=getcheckpoints)):
+async def getsdxlpresets(ctx: discord.AutocompleteContext):
+    global preset_list
+    if preset_list is None:
+        url = f"https://api.aiart.doubtech.com/comfyui/list-sdxl-presets"
+        preset_list = await get_data(url)
+    return sorted(preset_list)
+
+async def getsdxlsizes(ctx: discord.AutocompleteContext):
+    global preset_list
+    if preset_list is None:
+        url = f"https://api.aiart.doubtech.com/comfyui/list-sdxl-sizes"
+        preset_list = await get_data(url)
+    return sorted(preset_list)
+
+
+async def executepreset(ctx, *, prompt, preset="Default", width=512, height=512, checkpoint=""):
     """Generate an image from a text prompt using a Stable Diffusion preset"""
     await ctx.respond("Processing...", delete_after=0)
+
+    if "--loras" not in prompt:
+        loras = dream_presets.get_loras_string(userdatacache.userdata.get(ctx.author.id, "loras", {}))
+        if loras != "":
+            prompt += f" --loras {loras}"
 
     # if preset is empty set it to Default
     if preset == "":
         preset = "Default"
 
     config = f"Has requested a Stable Diffusion image using the {preset} preset."
-    if checkpoint is not None:
+    if checkpoint is not None and checkpoint != "":
         config = f"Has requested a Stable Diffusion image using the {preset} preset using the {checkpoint} checkpoint."
 
     # If the checkpoint is not none get the string value of the Option
     if str(checkpoint) == '':
         checkpoint = None
 
-    message = await ctx.send(content=f"**{ctx.author.display_name}** {config}\n``` {prompt}```\nYour prompt has been queued...")
+    # Get the prompt before the first "--" and strip it of whitespace
+    promptText = prompt.split("--", 1)[0].strip()
+
+    # Split the prompt by "--" and process the options
+    options = ""
+    for option in prompt.split("--")[1:]:
+        # Split each option into optionname and optionvalue
+        option_parts = option.strip().split(" ", 1)
+        optionname = option_parts[0]
+        optionvalue = option_parts[1] if len(option_parts) > 1 else None
+
+        # Skip the value refiner if it's the same as the value of promptText
+        if optionvalue is not None and optionvalue.strip() == promptText:
+            continue
+
+        # Append option to the options string
+        options += f"* {optionname} => {optionvalue}\n" if optionvalue else f"* {optionname}\n"
+
+    # Add the "Options" header if options are present
+    if options:
+        options = f"Options:\n{options}\n"
+
+    message = await ctx.send(
+        content=f"**{ctx.author.display_name}** {config}\n```{promptText}```\n{options}Status: Your prompt has been queued...",
+        view=RespinButtonView(ctx, prompt, preset, width, height, checkpoint))
     try:
-        result = await dream_presets.execdream(f'd::{ctx.author.id}', ctx.author.name, ctx.author.avatar.url, ctx.author.mention, prompt, preset, width, height, checkpoint)
+        result = await dream_presets.execdream(f'd::{ctx.author.id}', ctx.author.name, ctx.author.avatar.url,
+                                               ctx.author.mention, prompt, preset, width, height, checkpoint, loras=userdatacache.userdata.get(ctx.author.id, "loras", {}))
+        if result is None:
+            await message.edit(
+                content=f"{ctx.author.mention}\n```{prompt}```\n\nGeneration with {preset} failed! Error: Unknown")
+        elif 'error' in result:
+            await message.edit(
+                content=f"{ctx.author.mention}\n```{prompt}```\n\nGeneration with {preset} failed! Error: {result['error']}")
+            return
+        else:
+            cache_job(result['id'], message)
     except Exception as e:
         await message.edit(
             content=f"{ctx.author.mention}\n```{prompt}```\n\nGeneration with {preset} failed! Error: {e}")
-    if result is None:
-        await message.edit(
-            content=f"{ctx.author.mention}\n```{prompt}```\n\nGeneration with {preset} failed! Error: Unknown")
-    elif 'error' in result:
-        await message.edit(content=f"{ctx.author.mention}\n```{prompt}```\n\nGeneration with {preset} failed! Error: {result['error']}")
+
+
+class Variations(discord.ui.Modal):
+    def __init__(self, ctx, prompt, width, height, preset, checkpoint):
+        super().__init__(title="Prompt")
+        self.prompt = prompt
+        self.width = width
+        self.height = height
+        self.preset = preset
+        self.checkpoint = checkpoint
+        self.ctx = ctx
+        self.prompt_dialog = discord.ui.InputText(
+            label="Prompt",
+            value=self.prompt,
+            placeholder="Enter prompt",
+            style=discord.InputTextStyle.paragraph
+        )
+        self.add_item(self.prompt_dialog)
+
+    async def callback(self, interaction: Interaction):
+        await interaction.response.defer()
+        await executepreset(self.ctx, prompt=self.prompt_dialog.value, preset=self.preset, width=self.width,
+                            height=self.height, checkpoint=self.checkpoint)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await executepreset(self.ctx, prompt=self.prompt_dialog.value, preset=self.preset, width=self.width,
+                            height=self.height, checkpoint=self.checkpoint)
+
+
+class RespinButtonView(View):
+    def __init__(self, ctx, prompt, preset, width, height, checkpoint):
+        super().__init__()
+        self.ctx = ctx
+        self.prompt = prompt
+        self.preset = preset
+        self.width = width
+        self.height = height
+        self.checkpoint = checkpoint
+
+    # Use a dice emoji for the button
+    @discord.ui.button(label='Re-roll', emoji='🎲')
+    async def respin_button(self, button: Button, interaction: Interaction):
+        await interaction.response.defer()
+
+        # if prompt has --seed <seed> in it, replace it with --seed <random seed>, otherwise append --seed <random seed>
+        if '--seed' in self.prompt:
+            self.prompt = re.sub(r'--seed \d+', '--seed ' + str(random.randint(0, 999999999)), self.prompt)
+        else:
+            self.prompt += ' --seed ' + str(random.randint(0, 999999999))
+
+        await executepreset(self.ctx, prompt=self.prompt, preset=self.preset, width=self.width, height=self.height, checkpoint=self.checkpoint)
+
+    @discord.ui.button(label='Variant', emoji='✏️')
+    async def variant_button(self, button: Button, interaction: Interaction):
+        modal = Variations(ctx=self.ctx, prompt=self.prompt, preset=self.preset, width=self.width, height=self.height, checkpoint=self.checkpoint)
+        await interaction.response.send_modal(modal)
+
+    # Use an emoji for edit for the button
+    #@discord.ui.button(label='Variant', emoji='✏️')
+    #async def variant_button(self, button: Button, interaction: Interaction):
+    #    modal = VariantModal(title="Variant")
+    #    await self.ctx.send_modal(modal)
+
+@bot.slash_command(description="Generate an image from a text prompt using a Stable Diffusion preset")
+async def dream_preset(ctx, *, prompt, preset=discord.Option(default="", autocomplete=getpresets), width=512, height=512, checkpoint=discord.Option(default="", autocomplete=getcheckpoints)):
+    if preset is None or preset == "":
+        preset = userdatacache.userdata.get(ctx.author.id, "dreampreset", "Default")
+    userdatacache.userdata.set(ctx.author.id, "dreampreset", preset)
+
+    await executepreset(ctx, prompt=prompt, preset=str(preset), width=width, height=height, checkpoint=str(checkpoint))
+
+
+@bot.slash_command(description="Add a lora to your dream requests")
+async def dream_add_lora(ctx, *, lora=discord.Option(autocomplete=getloras), model_strength=1, prompt_strength=1):
+    if lora is None or lora == "":
+        await ctx.respond(content="Please provide a lora")
         return
+    loras = userdatacache.userdata.get(ctx.author.id, "loras", {})
+    loras[lora] = {"model_strength": model_strength, "prompt_strength": prompt_strength}
+    userdatacache.userdata.set(ctx.author.id, "loras", loras)
+    await ctx.respond(content=f"Added {lora} to your dream requests")
+
+
+@bot.slash_command(description="Remove a lora from your dream requests")
+async def dream_remove_lora(ctx, *, lora=discord.Option(autocomplete=getloras)):
+    if lora is None or lora == "":
+        await ctx.respond(content="Please provide a lora")
+        return
+    loras = userdatacache.userdata.get(ctx.author.id, "loras", {})
+    if lora in loras:
+        del loras[lora]
+        userdatacache.userdata.set(ctx.author.id, "loras", loras)
+        await ctx.respond(content=f"Removed {lora} from your dream requests")
     else:
-        cache_job(result['id'], message)
+        await ctx.respond(content=f"You don't have {lora} in your dream requests")
+
+
+@bot.slash_command(description="Get a list of your active loras")
+async def dream_get_active_loras(ctx: discord.AutocompleteContext):
+    loras = userdatacache.userdata.get(ctx.author.id, "loras", {})
+    await ctx.respond(content=f"{ctx.author.mention} your active loras are set to the following:\n```json\n{json.dumps(loras)}\n```")
+
+
+@bot.slash_command(description="Generate an image using SDXL")
+async def sdxl(ctx, *, prompt, refiner=None, negative=None, size=discord.Option(default="1024x1024", autocomplete=getsdxlsizes), preset=discord.Option(default="", autocomplete=getsdxlpresets), width=1024, height=1024, ):
+    # Strip anything after and including -- from the prompt and store it in stripped_prompt
+    stripped_prompt = prompt.split("--")[0].strip()
+
+    # if prompt doesn't contain --refiner add refiner
+    if "--refiner" not in prompt:
+        prompt += " --refiner " + (refiner if refiner is not None else stripped_prompt)
+
+    # if prompt doesn't contain --negative add negative
+    if "--negative" not in prompt and negative is not None:
+        prompt += " --negative " + negative
+
+    # if --width value exists set width to it and remove it from prompt
+    if "--width" in prompt:
+        width = int(re.search(r'--width (\d+)', prompt).group(1))
+        prompt = re.sub(r'--width \d+', '', prompt)
+
+    # if --height value exists set height to it and remove it from prompt
+    if "--height" in prompt:
+        height = int(re.search(r'--height (\d+)', prompt).group(1))
+        prompt = re.sub(r'--height \d+', '', prompt)
+
+
+    if preset is None or preset == "":
+        preset = userdatacache.userdata.get(ctx.author.id, "sdxlpreset", "SDXL")
+    userdatacache.userdata.set(ctx.author.id, "sdxlpreset", preset)
+    await executepreset(ctx, prompt=prompt, preset=preset, width=width, height=height)
 
 # A bot command to print the chatgpt history for an agent
 
@@ -511,7 +729,6 @@ async def chatgpt(ctx, *, prompt, namespace="", agent="", use_history=True, appe
 # a command for chatgpt settings
 @bot.slash_command(description="View and manage your settings for ChatGPT agents")
 async def chatgpt_settings(ctx, *, command: ChatGptCommands = ChatGptCommands.set_typeblock, typeblock="", prefix="", postfix="", namespace="", agent=""):
-    print(f"exec command: {command}")
     if command == ChatGptCommands.set_typeblock:
         await chatgpt_typeblock(ctx, typeblock=typeblock, namespace=namespace, agent=agent)
     elif command == ChatGptCommands.set_prefix:
@@ -706,7 +923,7 @@ async def process_data(jobData):
             worker = jobData['job']['worker']
         else:
             worker = None
-        print(jobData)
+
         channel = discordmsg['channel-id']
         m = None
         c = bot.get_channel(channel)
@@ -751,7 +968,6 @@ async def process_data(jobData):
             dbref.child('jobs').child('data').child(job).delete()
 
 def result_handler(ev):
-    print(f"Result: {ev}")
     if ev.path == '/':
         if ev.data is not None:
             if 'source' in ev.data and ev.data['source'] == 'api':
@@ -802,56 +1018,80 @@ def queue_job_data_for_processing(job):
 async def sync_job(job_id):
     job = discord_job_cache.get_from_cache(job_id)
     if job is not None:
-        channel = bot.get_channel(job['channel_id'])
-        if channel:
-            message = await channel.fetch_message(job['message_id'])
-            if message is not None:
-                data = await dream_presets.get_data(f"https://api.aiart.doubtech.com/jobs-v2/job-status?id={job_id}")
-                if data is not None and 'result' in data:
-                    if data['result'] is None:
-                        content = f"{message.content}"
-                        # replace "Your prompt has been queued.." if it is there with "Job completed without creating an image.
-                        content = content.replace("Your prompt has been queued...", "Job completed without creating an image.")
+        try:
+            channel = bot.get_channel(job['channel_id'])
+            if channel:
+                message = await channel.fetch_message(job['message_id'])
+                if message is not None:
+                    data = await dream_presets.get_data(f"https://api.aiart.doubtech.com/jobs-v2/job-status?id={job_id}")
+                    # Replace the line Status: .* with Status: Your prompt is being processed by .*! Waiting for first image...
+                    if data is not None and 'status' in data:
+                        status = data['status']
+                        if status == 'processing':
+                            status = f'Your prompt is being processed by {data["processor"]}! Waiting for first image...'
+                        elif status == 'failed':
+                            status = f'Your prompt failed to process by {data["processor"]}!'
+                        elif status == 'complete':
+                            status = f'Your prompt has been processed by {data["processor"]}!'
+                        content = message.content
+                        content = re.sub(r"Status: .*", f"Status: {status}", content)
                         await message.edit(content=content)
-                        discord_job_cache.remove_from_cache(job_id)
-                    else:
-                        id = data['result']
-                        image = await dream_presets.get_data(f"https://api.aiart.doubtech.com/art?id={id}")
-                        if image is not None and len(image) > 0 and 'url' in image[0]:
-                            url = image[0]['url']
-                            print(f"Job completed with image {url}")
-                            content = message.content.replace("Your prompt has been queued...", "")
-                            embed = discord.Embed()
-                            embed.set_image(url=url)
-                            await message.edit(content=f"{content}", embed=embed)
-                            discord_job_cache.remove_from_cache(job_id)
 
-                #await message.edit(content=f"{ctx.author.mention}\nPreset: {preset}\n```{prompt}```\n\n{result['url']}")
+                    if data is not None and 'result' in data:
+                        if data['result'] is None:
+                            content = f"{message.content}"
+                            # replace "Your prompt has been queued.." if it is there with "Job completed without creating an image.
+                            content = content.replace("Your prompt has been queued...", "Job completed without creating an image.")
+                            await message.edit(content=content)
+                            discord_job_cache.remove_from_cache(job_id)
+                        else:
+                            id = data['result']
+                            image = await dream_presets.get_data(f"https://api.aiart.doubtech.com/art?id={id}")
+                            if image is not None and len(image) > 0 and 'url' in image[0]:
+                                url = image[0]['url']
+                                print(f"Job completed with image {url}")
+                                embed = discord.Embed()
+                                embed.set_image(url=url)
+                                await message.edit(content=f"{content}", embed=embed)
+                                discord_job_cache.remove_from_cache(job_id)
+
+                    #await message.edit(content=f"{ctx.author.mention}\nPreset: {preset}\n```{prompt}```\n\n{result['url']}")
+        except:
+            print(f"Error syncing job {job_id}")
+            discord_job_cache.remove_from_cache(job_id)
 
 def sync_cached_jobs():
     print("Syncing cached jobs...")
     # Iterate over all cached job keys
     keys = discord_job_cache.get_cache().keys()
-    for job in keys:
+    # create a new array with keys
+    keysnap = []
+    for key in keys:
+        keysnap.append(key)
+
+    for job in keysnap:
         # Get the job state from https://api.aiart.doubtech.com/jobs-v2/job-status?id={job} via request
-        print(f"...{job}")
-        r = requests.get(f'https://api.aiart.doubtech.com/jobs-v2/job-status?id={job}')
-        if r.status_code == 200:
-            # If the job is complete, remove it from the cache
-            if r.json()['status'] == 'complete':
-                print("Job is complete, removing from cache and updating message.")
-                async_call(sync_job(job))
+        try:
+            r = requests.get(f'https://api.aiart.doubtech.com/jobs-v2/job-status?id={job}')
+            if r.status_code == 200:
+                # If the job is complete, remove it from the cache
+                if r.json()['status'] == 'complete':
+                    print("Job is complete, removing from cache and updating message.")
+                    async_call(sync_job(job))
+        except:
+            print(f"...Error syncing {job}")
+
 
 
 
 def activity_syncer(result):
     ev = FirebaseUpdateEvent(result)
-    print(f"Syncing activity: {ev}")
+    print(f"Syncing activity...")
     sync_cached_jobs()
 
 def full_syncer(result):
     ev = FirebaseUpdateEvent(result)
-    print(f"Syncing full state: {ev}")
+    print(f"Syncing full state...")
 
     if ev.path == '/':
         data = ev.child('data')
@@ -970,7 +1210,6 @@ async def set_namespace(ctx, *, namespace="default"):
 
 @bot.slash_command(description="View and manage your history for ChatGPT agents")
 async def chatgpt_history(ctx, *, command: ChatGptHistoryCommands = ChatGptHistoryCommands.list, namespace="", agent=""):
-    print(f"exec command: {command}")
     if command == ChatGptHistoryCommands.list:
         await chatgpt_show_history(ctx, namespace, agent)
     elif command == ChatGptHistoryCommands.clear:

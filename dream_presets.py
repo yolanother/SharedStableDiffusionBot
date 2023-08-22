@@ -22,8 +22,20 @@ async def get_data(url, is_json=True):
                 print(f"Data was not proper format for json parsing and will be ignored.\n{data}")
                 return None
 
+def get_loras_string(loras):
+    loras_string = ""
+    # for each key in loras (if any)
+    for key in loras:
+        # get the {model_strength, prompt_strength} and format all the data into a string: "{key}:{model_strength}:{prompt_strength}"
+        lora_string = f"{key}:{loras[key]['model_strength']}:{loras[key]['prompt_strength']}"
+        # append the lora_string to the loras_string
+        loras_string += lora_string + ","
+    if loras_string != "":
+        # remove the last comma from the loras_string
+        loras_string = loras_string[:-1]
+    return loras_string
 
-async def execdream(author, displayName, avatar, mention, prompt, preset="Default", width=512, height=512, checkpoint=None):
+async def execdream(author, displayName, avatar, mention, prompt, preset="Default", width=512, height=512, checkpoint=None,loras={}):
     # Split the prompt using '--' as a delimiter
     parts = prompt.split("--")
 
@@ -48,6 +60,13 @@ async def execdream(author, displayName, avatar, mention, prompt, preset="Defaul
 
     # Get all of the field values and keys. Encode the values as URL params
     field_values = [f"{field[0]}={urllib.parse.quote_plus(field[1].strip())}" for field in fields]
+
+    if "loras" not in fields:
+        loras_string = get_loras_string(loras)
+
+        if loras_string != "":
+            # add the loras_string to the field_values
+            field_values.append(f"loras={urllib.parse.quote_plus(loras_string)}")
 
     # Format a request
     url = f"https://api.aiart.doubtech.com/comfyui/dream?token={config['aiart-token']}&preset={preset}&width={width}&height={height}&prompt={urllib.parse.quote_plus(prompt)}&{'&'.join(field_values)}"
